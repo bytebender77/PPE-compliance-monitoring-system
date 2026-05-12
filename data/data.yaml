@@ -1,0 +1,27 @@
+# YOLOv8 dataset configuration — PPE Compliance Detection
+#
+# Paths are relative to this file's location (data/).
+# YOLOv8 resolves them from the directory containing data.yaml.
+#
+# Usage:
+#   yolo detect train data=data/data.yaml model=yolov8s.pt epochs=100
+#   yolo detect val   data=data/data.yaml model=models/best.pt split=test
+
+path: .                          # root = data/ directory
+train: processed/images/train
+val:   processed/images/val
+test:  processed/images/test
+
+# Number of classes
+nc: 4
+
+# Class names — order must match annotation class IDs exactly
+# ID 0: person        — every worker in frame, with or without PPE
+# ID 1: helmet        — hard hat / safety helmet only
+# ID 2: safety_vest   — high-visibility vest or jacket
+# ID 3: goggles       — safety goggles / eye protection
+names:
+  0: person
+  1: helmet
+  2: safety_vest
+  3: goggles
