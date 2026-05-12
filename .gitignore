@@ -1,0 +1,59 @@
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# ── Dataset (large files — store in Roboflow or shared drive) ─────────────────
+data/raw/videos/
+data/raw/frames/
+data/processed/images/
+data/processed/labels/
+
+# Keep directory structure and docs — exclude only the actual files
+!data/raw/videos/.gitkeep
+!data/raw/frames/.gitkeep
+!data/processed/images/train/.gitkeep
+!data/processed/images/val/.gitkeep
+!data/processed/images/test/.gitkeep
+!data/processed/labels/train/.gitkeep
+!data/processed/labels/val/.gitkeep
+!data/processed/labels/test/.gitkeep
+!data/samples/.gitkeep
+
+# ── Model weights (large binary files) ───────────────────────────────────────
+models/
+runs/
+
+# Keep the models/ directory itself
+!models/.gitkeep
+
+# ── YOLOv8 training output ────────────────────────────────────────────────────
+runs/
+
+# ── Runtime output ────────────────────────────────────────────────────────────
+screenshots/
+logs/
+
+# ── Environment ───────────────────────────────────────────────────────────────
+.env
+.env.local
+.env.*.local
+
+# ── IDE ───────────────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db

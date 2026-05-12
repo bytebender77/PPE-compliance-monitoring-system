@@ -1,0 +1,59 @@
+# ══════════════════════════════════════════════════════════════════════════════
+# PPE Compliance Monitoring System — Python dependencies
+# Stage 1: Person Detection MVP
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# Install:
+#   pip install -r requirements.txt
+#
+# GPU note:
+#   PyTorch with CUDA is NOT listed here because the CUDA version depends on
+#   your driver. Install separately from pytorch.org BEFORE running pip install:
+#
+#   # CUDA 11.8 example:
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
+#
+#   # CPU only (works, just slower):
+#   pip install torch torchvision
+#
+# Version pins:
+#   Pinned to minor versions (==X.Y.*) not patches so security patches auto-apply
+#   but breaking changes don't sneak in. Tighten to ==X.Y.Z in Docker.
+
+# ── Core inference ─────────────────────────────────────────────────────────────
+ultralytics>=8.0,<9.0          # YOLOv8 — detection, tracking export
+opencv-python>=4.9,<5.0        # video capture, drawing, display
+
+# ── Numerical / array ─────────────────────────────────────────────────────────
+numpy>=1.24,<2.0               # array ops (pinned below 2.0 for compat)
+
+# ── Testing ────────────────────────────────────────────────────────────────────
+pytest>=8.0,<9.0               # test runner
+pytest-cov>=5.0,<6.0           # coverage reporting
+
+# ══════════════════════════════════════════════════════════════════════════════
+# FUTURE STAGES — commented out now, uncomment as each stage is implemented
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Stage 2 — ByteTrack multi-object tracking
+# supervision>=0.20,<1.0       # roboflow supervision (includes ByteTrack)
+
+# Stage 4 — Compliance engine
+# (no new deps — pure Python logic on top of existing detection output)
+
+# Stage 5 — Alert & logging
+# sqlalchemy>=2.0,<3.0         # ORM (SQLite dev → PostgreSQL prod)
+# alembic>=1.13,<2.0           # schema migrations
+# aiosmtplib>=3.0,<4.0         # async SMTP for email alerts
+# httpx>=0.27,<1.0             # async HTTP for webhook notifications
+
+# Stage 6 — Backend API
+# fastapi>=0.110,<1.0          # REST + WebSocket API
+# uvicorn[standard]>=0.29,<1.0 # ASGI server for FastAPI
+# pydantic>=2.0,<3.0           # data validation (FastAPI uses this internally)
+# python-multipart>=0.0.9      # needed for FastAPI file uploads
+
+# Stage 7 — Production / deployment
+# psycopg2-binary>=2.9,<3.0    # PostgreSQL adapter (binary = no libpq build)
+# python-dotenv>=1.0,<2.0      # .env file loading for secrets
+# structlog>=24.0,<25.0        # structured JSON logging for production
