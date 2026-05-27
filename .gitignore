@@ -32,7 +32,12 @@ data/processed/labels/
 !data/samples/.gitkeep
 
 # ── Model weights (large binary files) ───────────────────────────────────────
+*.pt
+*.engine
+*.onnx
+*.tflite
 models/
+weights/
 runs/
 
 # Keep the models/ directory itself
@@ -44,6 +49,17 @@ runs/
 # ── Runtime output ────────────────────────────────────────────────────────────
 screenshots/
 logs/
+
+# ── Large media / raw datasets ────────────────────────────────────────────────
+*.mp4
+*.avi
+*.mov
+*.MOV
+*.mkv
+cctv data/
+vest.v1i.yolov8/
+vest3.v2i.yolov8/
+debug_snapshot.jpg
 
 # ── Environment ───────────────────────────────────────────────────────────────
 .env

@@ -1,0 +1,50 @@
+# ── Python ───────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# ── Virtual environment ────────────────────────────────────────────────────────
+venv/
+.venv/
+env/
+
+# ── Dataset (large — do not bake into image) ──────────────────────────────────
+cctv data/
+data/raw/
+data/processed/
+vest.v1i.yolov8/
+vest3.v2i.yolov8/
+runs/
+
+# ── Dev files ─────────────────────────────────────────────────────────────────
+.env
+.env.*
+*.MOV
+*.mp4
+*.avi
+debug_snapshot.jpg
+
+# ── Git ────────────────────────────────────────────────────────────────────────
+.git/
+.gitignore
+
+# ── Secrets / credentials ─────────────────────────────────────────────────────
+*.pem
+*.key
+secrets/
+
+# ── Logs and outputs (mounted as volumes at runtime) ─────────────────────────
+logs/
+screenshots/
+
+# ── Editor / OS ───────────────────────────────────────────────────────────────
+.DS_Store
+.idea/
+.vscode/
+*.swp

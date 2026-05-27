@@ -19,74 +19,90 @@ from dataclasses import dataclass, field
 
 @dataclass
 class Settings:
-    # ── Model ──────────────────────────────────────────────────────────────────
-    # "yolov8n.pt" is the nano variant: fastest, smallest — ideal for MVP.
-    # Ultralytics auto-downloads it on first run if not present locally.
-    # Stage 3 will replace this with our custom-trained best.pt.
+    # ── Person detector model ─────────────────────────────────────────────────
+    # COCO-pretrained nano model — used only to detect persons.
+    # Fast and accurate enough for person localisation.
     MODEL_PATH: str = field(
-        default_factory=lambda: os.getenv("PPE_MODEL_PATH", "yolov8n.pt")
+        default_factory=lambda: os.getenv("PPE_PERSON_MODEL", "yolov8n.pt")
     )
 
-    # Confidence threshold: detections below this score are discarded.
-    # 0.4 is a good starting point — low enough to catch distant workers,
-    # high enough to suppress background false positives.
-    # Tune upward (0.5–0.6) after seeing real footage.
+    # ── PPE detector model (Stage 3) ──────────────────────────────────────────
+    # Our custom-trained model: helmet (0), safety_vest (1), goggles (2).
+    PPE_MODEL_PATH: str = field(
+        default_factory=lambda: os.getenv("PPE_MODEL_PATH", "models/best.pt")
+    )
+
+    # ── Confidence thresholds ─────────────────────────────────────────────────
+    # Person detector — slightly higher to avoid false person detections.
     CONFIDENCE_THRESHOLD: float = field(
         default_factory=lambda: float(os.getenv("PPE_CONF_THRESHOLD", "0.4"))
     )
+    # PPE detector — slightly lower so we don't miss partially visible items.
+    PPE_CONF_THRESHOLD: float = field(
+        default_factory=lambda: float(os.getenv("PPE_PPE_CONF_THRESHOLD", "0.10"))
+    )
 
     # ── Inference device ───────────────────────────────────────────────────────
-    # "cuda" → GPU (NVIDIA). "cpu" → fallback.
-    # YOLOv8 auto-detects if you pass "cuda" when no GPU is present and
-    # falls back to CPU — but we make the default explicit so it's obvious
-    # in logs which device is actually being used.
+    # "cuda" → NVIDIA GPU, "mps" → Apple Silicon, "cpu" → fallback.
     DEVICE: str = field(
         default_factory=lambda: os.getenv("PPE_DEVICE", "cpu")
     )
 
     # ── Display / annotation ───────────────────────────────────────────────────
-    # Bounding box colour for persons (BGR not RGB — OpenCV convention).
-    # Green = compliant in the future UI language. We'll differentiate
-    # compliant (green) vs non-compliant (red) in Stage 3.
-    PERSON_BOX_COLOR: tuple = (0, 220, 0)      # bright green
+    # Person box colour depends on compliance (set dynamically in display.py).
+    PERSON_COMPLIANT_COLOR: tuple   = (0, 220, 0)      # green  — all PPE worn
+    PERSON_NONCOMPLIANT_COLOR: tuple = (0, 0, 220)     # red    — PPE missing
+    PERSON_UNKNOWN_COLOR: tuple     = (0, 165, 255)    # orange — no persons nearby
 
-    # Colour used for "untracked" detections before ByteTrack is added.
-    UNTRACKED_BOX_COLOR: tuple = (0, 165, 255)  # orange
+    # Per-class PPE bounding box colours (BGR)
+    PPE_BOX_COLORS: dict = field(default_factory=lambda: {
+        "helmet":       (0, 255, 255),    # yellow
+        "safety_vest":  (255, 165, 0),    # blue-orange
+        "goggles":      (255, 0, 255),    # magenta
+    })
 
-    # Font scale for annotation text. 0.55 is readable at 720p without
-    # overwhelming the image.
-    FONT_SCALE: float = 0.55
-
-    # Line thickness for bounding boxes (pixels)
+    FONT_SCALE: float  = 0.55
     BOX_THICKNESS: int = 2
 
-    # ── Future PPE classes (Stage 2 / 3) ──────────────────────────────────────
-    # These are declared here NOW so Stage 2 can simply uncomment/populate
-    # them — the settings object already has the right shape.
-    #
-    # Maps YOLO class ID → human-readable label.
-    # After fine-tuning our own model the class IDs will match these entries.
+    # ── PPE class map ──────────────────────────────────────────────────────────
+    # Maps class_id → name for our trained model.
     PPE_CLASS_MAP: dict = field(default_factory=lambda: {
-        0: "person",
-        # 1: "helmet",       — added Stage 3
-        # 2: "safety_vest",  — added Stage 3
-        # 3: "goggles",      — added Stage 3
+        0: "helmet",
+        1: "safety_vest",
+        2: "goggles",
     })
+
+    # ── Compliance rules ───────────────────────────────────────────────────────
+    # Which PPE items are mandatory. Any person missing one of these is flagged.
+    # Extend for zone-specific rules in Stage 4.
+    REQUIRED_PPE: list = field(
+        default_factory=lambda: os.getenv(
+            "PPE_REQUIRED", "helmet,safety_vest"
+        ).split(",")
+    )
+
+    # Minimum fraction of a PPE bbox that must overlap with a person bbox
+    # to count as "this person is wearing this item".
+    PPE_ASSOCIATION_THRESH: float = 0.1
 
     # Required PPE per zone (Stage 4 compliance engine will consume this)
     REQUIRED_PPE_BY_ZONE: dict = field(default_factory=lambda: {
-        "default": ["helmet", "safety_vest"],
-        # "welding_bay":  ["helmet", "safety_vest", "goggles"],
-        # "chemical_lab": ["helmet", "safety_vest", "goggles"],
+        "default":      ["helmet", "safety_vest"],
+        "welding_bay":  ["helmet", "safety_vest", "goggles"],
+        "chemical_lab": ["helmet", "safety_vest", "goggles"],
     })
 
     # ── Alert thresholds (Stage 5) ─────────────────────────────────────────────
     # N consecutive non-compliant frames before triggering an alert.
     # 20 frames @ 30 fps ≈ 0.67 s — filters transient false positives.
-    ALERT_FRAME_THRESHOLD: int = int(os.getenv("PPE_ALERT_FRAMES", "20"))
+    ALERT_FRAME_THRESHOLD: int = field(
+        default_factory=lambda: int(os.getenv("PPE_ALERT_FRAMES", "20"))
+    )
 
     # Minimum seconds between repeated alerts for the same worker.
-    ALERT_COOLDOWN_SECONDS: int = int(os.getenv("PPE_ALERT_COOLDOWN", "60"))
+    ALERT_COOLDOWN_SECONDS: int = field(
+        default_factory=lambda: int(os.getenv("PPE_ALERT_COOLDOWN", "60"))
+    )
 
     # ── Paths ──────────────────────────────────────────────────────────────────
     SCREENSHOTS_DIR: str = "screenshots"

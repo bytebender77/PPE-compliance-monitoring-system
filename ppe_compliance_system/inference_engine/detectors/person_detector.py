@@ -62,15 +62,18 @@ class PersonDetector:
         model_path: str = "yolov8n.pt",
         conf_threshold: float = 0.4,
         device: str = "cpu",
+        half: bool = False,
     ) -> None:
         self.model_path      = model_path
         self.conf_threshold  = conf_threshold
         self.device          = device
+        # FP16 only works on CUDA — silently disable on CPU/MPS
+        self.half            = half and device == "cuda"
         self._model          = None          # lazy-loaded on first detect() call
 
         log.info(
             f"PersonDetector initialised | model={model_path} "
-            f"conf={conf_threshold} device={device}"
+            f"conf={conf_threshold} device={device} half={self.half}"
         )
 
     # ── Model loading ──────────────────────────────────────────────────────────
@@ -126,6 +129,7 @@ class PersonDetector:
             conf=self.conf_threshold,
             verbose=False,
             device=self.device,
+            half=self.half,
         )
 
         # ── Parse results ──────────────────────────────────────────────────────

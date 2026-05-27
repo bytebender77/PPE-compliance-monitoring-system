@@ -30,8 +30,8 @@ from pathlib import Path
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-NUM_CLASSES = 4
-CLASS_NAMES = {0: "person", 1: "helmet", 2: "safety_vest", 3: "goggles"}
+NUM_CLASSES = 3
+CLASS_NAMES = {0: "helmet", 1: "safety_vest", 2: "goggles"}
 SPLITS = ["train", "val", "test"]
 VALID_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp"}
 
