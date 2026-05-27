@@ -1,0 +1,553 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PPE Compliance Dashboard</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            surface:  '#0f1117',
+            card:     '#1a1d27',
+            border:   '#2a2d3e',
+            accent:   '#6366f1',
+            danger:   '#ef4444',
+            warn:     '#f59e0b',
+            safe:     '#22c55e',
+          },
+          animation: {
+            'pulse-fast': 'pulse 0.8s cubic-bezier(0.4, 0, 0.6, 1) infinite',
+            'slide-in':   'slideIn 0.3s ease-out',
+            'fade-in':    'fadeIn 0.4s ease-out',
+          },
+          keyframes: {
+            slideIn:  { '0%': { transform: 'translateX(100%)', opacity: 0 }, '100%': { transform: 'translateX(0)', opacity: 1 } },
+            fadeIn:   { '0%': { opacity: 0, transform: 'translateY(8px)' }, '100%': { opacity: 1, transform: 'translateY(0)' } },
+          },
+        },
+      },
+    };
+  </script>
+  <style>
+    body { background: #0f1117; }
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: #1a1d27; }
+    ::-webkit-scrollbar-thumb { background: #2a2d3e; border-radius: 3px; }
+    ::-webkit-scrollbar-thumb:hover { background: #6366f1; }
+
+    .stat-card { transition: transform 0.2s, box-shadow 0.2s; }
+    .stat-card:hover { transform: translateY(-2px); box-shadow: 0 8px 32px rgba(99,102,241,0.15); }
+
+    .severity-CRITICAL { background: rgba(239,68,68,0.12); border-left: 3px solid #ef4444; }
+    .severity-WARNING  { background: rgba(245,158,11,0.12); border-left: 3px solid #f59e0b; }
+
+    .badge-CRITICAL { background: rgba(239,68,68,0.2); color: #ef4444; }
+    .badge-WARNING  { background: rgba(245,158,11,0.2); color: #f59e0b; }
+
+    .live-dot { animation: pulse-dot 1.4s ease-in-out infinite; }
+    @keyframes pulse-dot {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50%       { opacity: 0.5; transform: scale(0.8); }
+    }
+
+    .alert-toast {
+      animation: toastIn 0.35s ease-out forwards;
+    }
+    @keyframes toastIn {
+      from { transform: translateX(110%); opacity: 0; }
+      to   { transform: translateX(0);    opacity: 1; }
+    }
+
+    .ring-flash {
+      animation: ringFlash 0.6s ease-out 3;
+    }
+    @keyframes ringFlash {
+      0%,100% { box-shadow: 0 0 0 0 rgba(239,68,68,0); }
+      50%      { box-shadow: 0 0 0 6px rgba(239,68,68,0.4); }
+    }
+
+    .thumb { object-fit: cover; cursor: pointer; transition: opacity 0.2s; }
+    .thumb:hover { opacity: 0.8; }
+
+    #modal-overlay {
+      display: none;
+      position: fixed; inset: 0;
+      background: rgba(0,0,0,0.85);
+      z-index: 9999;
+      align-items: center;
+      justify-content: center;
+    }
+    #modal-overlay.open { display: flex; }
+    #modal-img { max-width: 90vw; max-height: 88vh; border-radius: 8px; border: 2px solid #2a2d3e; }
+  </style>
+</head>
+<body class="text-gray-100 min-h-screen font-sans">
+
+  <!-- ── HEADER ────────────────────────────────────────────────── -->
+  <header class="sticky top-0 z-50 bg-card border-b border-border px-6 py-3 flex items-center justify-between shadow-xl">
+    <div class="flex items-center gap-3">
+      <div class="w-9 h-9 rounded-lg bg-accent/20 border border-accent/40 flex items-center justify-center text-lg">🦺</div>
+      <div>
+        <h1 class="font-bold text-white text-base leading-tight">PPE Compliance Monitor</h1>
+        <p class="text-xs text-gray-400">Real-time safety dashboard</p>
+      </div>
+    </div>
+
+    <div class="flex items-center gap-4">
+      <!-- WS status -->
+      <div class="flex items-center gap-2 text-xs">
+        <span id="ws-dot" class="w-2 h-2 rounded-full bg-gray-500"></span>
+        <span id="ws-label" class="text-gray-400">Connecting…</span>
+      </div>
+
+      <!-- clock -->
+      <div class="text-xs text-gray-500 font-mono" id="clock">--:--:--</div>
+
+      <!-- refresh btn -->
+      <button onclick="refreshAll()"
+        class="text-xs px-3 py-1.5 rounded-md bg-accent/20 border border-accent/40 hover:bg-accent/30 transition-colors text-accent font-medium">
+        ↺ Refresh
+      </button>
+    </div>
+  </header>
+
+  <!-- ── MAIN CONTENT ───────────────────────────────────────────── -->
+  <main class="max-w-7xl mx-auto px-4 sm:px-6 py-6 space-y-6">
+
+    <!-- ── STAT CARDS ──────────────────────────────────────────── -->
+    <section class="grid grid-cols-2 sm:grid-cols-4 gap-4">
+
+      <div class="stat-card bg-card border border-border rounded-xl p-4">
+        <div class="flex items-center justify-between mb-3">
+          <span class="text-xs font-medium text-gray-400 uppercase tracking-wider">Total Violations</span>
+          <span class="text-2xl">⚠️</span>
+        </div>
+        <div class="text-3xl font-bold text-white" id="stat-total">—</div>
+        <div class="text-xs text-gray-500 mt-1">all-time</div>
+      </div>
+
+      <div class="stat-card bg-card border border-danger/30 rounded-xl p-4">
+        <div class="flex items-center justify-between mb-3">
+          <span class="text-xs font-medium text-gray-400 uppercase tracking-wider">Critical</span>
+          <span class="text-2xl">🚨</span>
+        </div>
+        <div class="text-3xl font-bold text-danger" id="stat-critical">—</div>
+        <div class="text-xs text-gray-500 mt-1">2+ PPE items missing</div>
+      </div>
+
+      <div class="stat-card bg-card border border-warn/30 rounded-xl p-4">
+        <div class="flex items-center justify-between mb-3">
+          <span class="text-xs font-medium text-gray-400 uppercase tracking-wider">Warnings</span>
+          <span class="text-2xl">🔶</span>
+        </div>
+        <div class="text-3xl font-bold text-warn" id="stat-warnings">—</div>
+        <div class="text-xs text-gray-500 mt-1">1 PPE item missing</div>
+      </div>
+
+      <div class="stat-card bg-card border border-border rounded-xl p-4">
+        <div class="flex items-center justify-between mb-3">
+          <span class="text-xs font-medium text-gray-400 uppercase tracking-wider">Today</span>
+          <span class="text-2xl">📅</span>
+        </div>
+        <div class="text-3xl font-bold text-white" id="stat-today">—</div>
+        <div class="text-xs text-gray-500 mt-1" id="stat-today-date">—</div>
+      </div>
+
+    </section>
+
+    <!-- ── PPE BREAKDOWN ───────────────────────────────────────── -->
+    <section class="grid grid-cols-3 gap-4">
+
+      <div class="bg-card border border-border rounded-xl p-4 flex items-center gap-4">
+        <div class="w-10 h-10 rounded-full bg-yellow-500/10 border border-yellow-500/30 flex items-center justify-center text-xl">⛑️</div>
+        <div>
+          <div class="text-xs text-gray-400 mb-0.5">No Helmet</div>
+          <div class="text-2xl font-bold text-white" id="stat-helmet">—</div>
+        </div>
+      </div>
+
+      <div class="bg-card border border-border rounded-xl p-4 flex items-center gap-4">
+        <div class="w-10 h-10 rounded-full bg-orange-500/10 border border-orange-500/30 flex items-center justify-center text-xl">🦺</div>
+        <div>
+          <div class="text-xs text-gray-400 mb-0.5">No Safety Vest</div>
+          <div class="text-2xl font-bold text-white" id="stat-vest">—</div>
+        </div>
+      </div>
+
+      <div class="bg-card border border-border rounded-xl p-4 flex items-center gap-4">
+        <div class="w-10 h-10 rounded-full bg-blue-500/10 border border-blue-500/30 flex items-center justify-center text-xl">🥽</div>
+        <div>
+          <div class="text-xs text-gray-400 mb-0.5">No Goggles</div>
+          <div class="text-2xl font-bold text-white" id="stat-goggles">—</div>
+        </div>
+      </div>
+
+    </section>
+
+    <!-- ── MAIN GRID: Live Feed + Table ───────────────────────── -->
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+
+      <!-- ── LIVE ALERT FEED ─────────────────────────────────── -->
+      <div class="lg:col-span-1 bg-card border border-border rounded-xl flex flex-col" style="max-height:520px">
+        <div class="px-4 py-3 border-b border-border flex items-center justify-between">
+          <div class="flex items-center gap-2">
+            <span class="live-dot w-2 h-2 rounded-full bg-safe"></span>
+            <span class="text-sm font-semibold text-white">Live Alerts</span>
+          </div>
+          <span id="live-count" class="text-xs bg-accent/20 text-accent border border-accent/30 px-2 py-0.5 rounded-full font-mono">0 new</span>
+        </div>
+        <div id="live-feed" class="flex-1 overflow-y-auto p-3 space-y-2">
+          <div class="text-xs text-gray-500 text-center py-8">Waiting for live alerts…</div>
+        </div>
+      </div>
+
+      <!-- ── VIOLATIONS TABLE ────────────────────────────────── -->
+      <div class="lg:col-span-2 bg-card border border-border rounded-xl flex flex-col" style="max-height:520px">
+        <div class="px-4 py-3 border-b border-border flex items-center justify-between">
+          <span class="text-sm font-semibold text-white">Recent Violations</span>
+          <div class="flex items-center gap-2">
+            <!-- severity filter -->
+            <select id="severity-filter" onchange="loadViolations()"
+              class="text-xs bg-surface border border-border rounded-md px-2 py-1 text-gray-300 focus:outline-none focus:border-accent">
+              <option value="">All</option>
+              <option value="CRITICAL">Critical</option>
+              <option value="WARNING">Warning</option>
+            </select>
+            <button onclick="loadViolations()"
+              class="text-xs px-2 py-1 rounded-md bg-surface border border-border hover:border-accent transition-colors text-gray-400 hover:text-white">
+              ↺
+            </button>
+          </div>
+        </div>
+
+        <div class="flex-1 overflow-y-auto">
+          <table class="w-full text-xs">
+            <thead class="sticky top-0 bg-card border-b border-border">
+              <tr class="text-gray-400 uppercase tracking-wider">
+                <th class="px-4 py-2 text-left font-medium">Time</th>
+                <th class="px-4 py-2 text-left font-medium">Worker</th>
+                <th class="px-4 py-2 text-left font-medium">Missing PPE</th>
+                <th class="px-4 py-2 text-left font-medium">Severity</th>
+                <th class="px-4 py-2 text-left font-medium">Camera</th>
+                <th class="px-4 py-2 text-left font-medium">Screenshot</th>
+              </tr>
+            </thead>
+            <tbody id="violations-body">
+              <tr><td colspan="6" class="text-center py-10 text-gray-500">Loading…</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <!-- pagination -->
+        <div class="px-4 py-2 border-t border-border flex items-center justify-between text-xs text-gray-500">
+          <span id="table-count">0 violations shown</span>
+          <div class="flex gap-2">
+            <button onclick="changePage(-1)" id="btn-prev"
+              class="px-2 py-1 rounded bg-surface border border-border hover:border-accent disabled:opacity-40 transition-colors"
+              disabled>← Prev</button>
+            <span id="page-label" class="px-2 py-1">Page 1</span>
+            <button onclick="changePage(1)" id="btn-next"
+              class="px-2 py-1 rounded bg-surface border border-border hover:border-accent transition-colors">Next →</button>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- ── SESSIONS TABLE ──────────────────────────────────────── -->
+    <section class="bg-card border border-border rounded-xl">
+      <div class="px-4 py-3 border-b border-border flex items-center justify-between">
+        <span class="text-sm font-semibold text-white">Recent Sessions</span>
+        <button onclick="loadSessions()" class="text-xs text-gray-400 hover:text-white transition-colors">↺ Refresh</button>
+      </div>
+      <div class="overflow-x-auto">
+        <table class="w-full text-xs">
+          <thead class="border-b border-border">
+            <tr class="text-gray-400 uppercase tracking-wider">
+              <th class="px-4 py-2 text-left font-medium">Session ID</th>
+              <th class="px-4 py-2 text-left font-medium">Started</th>
+              <th class="px-4 py-2 text-left font-medium">Camera</th>
+              <th class="px-4 py-2 text-left font-medium">Violations</th>
+              <th class="px-4 py-2 text-left font-medium">Critical</th>
+              <th class="px-4 py-2 text-left font-medium">Warnings</th>
+            </tr>
+          </thead>
+          <tbody id="sessions-body">
+            <tr><td colspan="6" class="text-center py-6 text-gray-500">Loading…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- ── TOAST CONTAINER ────────────────────────────────────────── -->
+  <div id="toast-container" class="fixed top-20 right-4 z-50 space-y-2 w-80"></div>
+
+  <!-- ── IMAGE MODAL ────────────────────────────────────────────── -->
+  <div id="modal-overlay" onclick="closeModal()">
+    <div onclick="event.stopPropagation()" class="relative">
+      <img id="modal-img" src="" alt="Violation Screenshot" />
+      <button onclick="closeModal()"
+        class="absolute top-2 right-2 w-7 h-7 rounded-full bg-black/60 text-white text-sm hover:bg-black/80 flex items-center justify-center">✕</button>
+    </div>
+  </div>
+
+  <!-- ── JAVASCRIPT ─────────────────────────────────────────────── -->
+  <script>
+  // ── State ────────────────────────────────────────────────────────
+  let ws            = null;
+  let wsRetryDelay  = 2000;
+  let liveCount     = 0;
+  let currentPage   = 1;
+  const PAGE_SIZE   = 25;
+
+  // ── Clock ────────────────────────────────────────────────────────
+  function tickClock() {
+    document.getElementById('clock').textContent =
+      new Date().toLocaleTimeString('en-IN', { hour12: false });
+  }
+  setInterval(tickClock, 1000);
+  tickClock();
+
+  // ── Helpers ──────────────────────────────────────────────────────
+  function fmtTime(ts) {
+    if (!ts) return '—';
+    // ts is like "2025-06-01 14:23:05"
+    return ts.replace('T', ' ').substring(0, 19);
+  }
+
+  function badge(severity) {
+    return `<span class="badge-${severity} text-[10px] font-bold px-2 py-0.5 rounded-full uppercase">${severity}</span>`;
+  }
+
+  function missingPpeChips(raw) {
+    if (!raw) return '—';
+    return raw.split(',').map(p => p.trim()).filter(Boolean).map(p => {
+      const icons = { helmet: '⛑️', safety_vest: '🦺', goggles: '🥽' };
+      const label = p.replace(/_/g, ' ');
+      return `<span class="inline-flex items-center gap-1 bg-white/5 border border-white/10 rounded px-1.5 py-0.5 text-[10px] text-gray-300">${icons[p] || '?'} ${label}</span>`;
+    }).join(' ');
+  }
+
+  function thumbOrDash(shot) {
+    if (!shot) return '<span class="text-gray-600">—</span>';
+    // shot is an absolute path on disk; serve via /screenshots/{filename}
+    const name = shot.split('/').pop().split('\\').pop();
+    const url  = `/screenshots/${name}`;
+    return `<img src="${url}" alt="shot" class="thumb w-14 h-10 rounded border border-border object-cover"
+              onerror="this.replaceWith(document.createTextNode('—'))"
+              onclick="openModal('${url}')" />`;
+  }
+
+  // ── Modal ────────────────────────────────────────────────────────
+  function openModal(url) {
+    document.getElementById('modal-img').src = url;
+    document.getElementById('modal-overlay').classList.add('open');
+  }
+  function closeModal() {
+    document.getElementById('modal-overlay').classList.remove('open');
+  }
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
+
+  // ── Toasts ───────────────────────────────────────────────────────
+  function showToast(v) {
+    const container = document.getElementById('toast-container');
+    const isCrit    = v.severity === 'CRITICAL';
+    const el        = document.createElement('div');
+    el.className    = `alert-toast rounded-lg border p-3 shadow-xl text-xs
+                       ${isCrit
+                         ? 'bg-danger/10 border-danger/40 text-danger'
+                         : 'bg-warn/10 border-warn/40 text-warn'}`;
+    el.innerHTML = `
+      <div class="flex items-start gap-2">
+        <span class="text-lg mt-0.5">${isCrit ? '🚨' : '⚠️'}</span>
+        <div class="flex-1 min-w-0">
+          <div class="font-bold">${v.severity} — Worker #${v.worker_id}</div>
+          <div class="text-gray-300 mt-0.5">${(v.missing_ppe || '').replace(/_/g,' ')}</div>
+          <div class="text-gray-500 mt-0.5">${v.camera || ''} · ${fmtTime(v.timestamp)}</div>
+        </div>
+      </div>`;
+    container.prepend(el);
+    // auto-dismiss after 8s
+    setTimeout(() => { el.style.transition = 'opacity 0.5s'; el.style.opacity = 0; setTimeout(() => el.remove(), 500); }, 8000);
+  }
+
+  // ── Live Feed ─────────────────────────────────────────────────────
+  function addLiveAlert(v) {
+    liveCount++;
+    document.getElementById('live-count').textContent = `${liveCount} new`;
+
+    const feed   = document.getElementById('live-feed');
+    const isCrit = v.severity === 'CRITICAL';
+
+    // Remove placeholder
+    const placeholder = feed.querySelector('.text-gray-500');
+    if (placeholder) placeholder.remove();
+
+    const el = document.createElement('div');
+    el.className = `severity-${v.severity} rounded-lg p-2.5 text-xs animate-slide-in`;
+    el.innerHTML = `
+      <div class="flex items-center justify-between mb-1">
+        ${badge(v.severity)}
+        <span class="text-gray-500 font-mono">${fmtTime(v.timestamp).substring(11)}</span>
+      </div>
+      <div class="text-gray-200 font-medium">Worker #${v.worker_id}</div>
+      <div class="text-gray-400 mt-0.5">${(v.missing_ppe || '').replace(/_/g,' ')}</div>
+      <div class="text-gray-600 mt-0.5">${v.camera || '—'}</div>`;
+    feed.prepend(el);
+
+    // Keep max 50 entries in live feed
+    while (feed.children.length > 50) feed.removeChild(feed.lastChild);
+  }
+
+  // ── WebSocket ─────────────────────────────────────────────────────
+  function connectWS() {
+    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+    ws = new WebSocket(`${proto}://${location.host}/ws/alerts`);
+
+    ws.onopen = () => {
+      setWsStatus(true);
+      wsRetryDelay = 2000;
+    };
+
+    ws.onmessage = e => {
+      try {
+        const v = JSON.parse(e.data);
+        addLiveAlert(v);
+        showToast(v);
+        // Refresh stats & table silently
+        fetchStats();
+        loadViolations(true);  // silent refresh
+      } catch(_) {}
+    };
+
+    ws.onclose = () => {
+      setWsStatus(false);
+      setTimeout(connectWS, wsRetryDelay);
+      wsRetryDelay = Math.min(wsRetryDelay * 1.5, 30000);
+    };
+
+    ws.onerror = () => ws.close();
+  }
+
+  function setWsStatus(online) {
+    const dot   = document.getElementById('ws-dot');
+    const label = document.getElementById('ws-label');
+    dot.className   = `w-2 h-2 rounded-full ${online ? 'bg-safe live-dot' : 'bg-danger'}`;
+    label.textContent = online ? 'Live' : 'Reconnecting…';
+    label.className = `${online ? 'text-safe' : 'text-danger'} text-xs`;
+  }
+
+  // ── Stats ─────────────────────────────────────────────────────────
+  async function fetchStats() {
+    try {
+      const res  = await fetch('/api/stats');
+      const data = await res.json();
+      document.getElementById('stat-total').textContent    = data.total    ?? '0';
+      document.getElementById('stat-critical').textContent = data.critical  ?? '0';
+      document.getElementById('stat-warnings').textContent = data.warnings  ?? '0';
+      document.getElementById('stat-helmet').textContent   = data.no_helmet ?? '0';
+      document.getElementById('stat-vest').textContent     = data.no_vest   ?? '0';
+      document.getElementById('stat-goggles').textContent  = data.no_goggles?? '0';
+    } catch(_) {}
+  }
+
+  async function fetchToday() {
+    try {
+      const res  = await fetch('/api/violations/today');
+      const data = await res.json();
+      document.getElementById('stat-today').textContent      = (data.violations || []).length;
+      document.getElementById('stat-today-date').textContent = data.date || '—';
+    } catch(_) {}
+  }
+
+  // ── Violations Table ──────────────────────────────────────────────
+  async function loadViolations(silent = false) {
+    const severity = document.getElementById('severity-filter').value;
+    const offset   = (currentPage - 1) * PAGE_SIZE;
+    const params   = new URLSearchParams({ limit: PAGE_SIZE + 1 });
+    if (severity) params.set('severity', severity);
+
+    // We fetch PAGE_SIZE+1 to know if there's a next page
+    try {
+      const res  = await fetch(`/api/violations?${params}`);
+      const data = await res.json();
+      const rows = data.violations || [];
+      const hasNext = rows.length > PAGE_SIZE;
+      const display = rows.slice(0, PAGE_SIZE);
+
+      const tbody = document.getElementById('violations-body');
+      if (!display.length) {
+        tbody.innerHTML = `<tr><td colspan="6" class="text-center py-10 text-gray-500">${
+          data.error || 'No violations yet — start the PPE pipeline.'}</td></tr>`;
+      } else {
+        tbody.innerHTML = display.map(v => `
+          <tr class="severity-${v.severity} border-b border-border/40 hover:bg-white/[0.02] transition-colors">
+            <td class="px-4 py-2.5 font-mono text-gray-400 whitespace-nowrap">${fmtTime(v.timestamp)}</td>
+            <td class="px-4 py-2.5 text-gray-200">#${v.worker_id}</td>
+            <td class="px-4 py-2.5">${missingPpeChips(v.missing_ppe)}</td>
+            <td class="px-4 py-2.5">${badge(v.severity)}</td>
+            <td class="px-4 py-2.5 text-gray-400">${v.camera || '—'}</td>
+            <td class="px-4 py-2.5">${thumbOrDash(v.screenshot_path)}</td>
+          </tr>`).join('');
+      }
+
+      document.getElementById('table-count').textContent = `${display.length} violation(s) shown`;
+      document.getElementById('btn-prev').disabled = currentPage === 1;
+      document.getElementById('btn-next').disabled = !hasNext;
+      document.getElementById('page-label').textContent = `Page ${currentPage}`;
+    } catch(err) {
+      if (!silent) console.error('loadViolations error', err);
+    }
+  }
+
+  function changePage(delta) {
+    currentPage = Math.max(1, currentPage + delta);
+    loadViolations();
+  }
+
+  // ── Sessions Table ────────────────────────────────────────────────
+  async function loadSessions() {
+    try {
+      const res  = await fetch('/api/sessions?limit=8');
+      const data = await res.json();
+      const rows = data.sessions || [];
+      const tbody = document.getElementById('sessions-body');
+
+      if (!rows.length) {
+        tbody.innerHTML = `<tr><td colspan="6" class="text-center py-6 text-gray-500">No sessions recorded yet.</td></tr>`;
+        return;
+      }
+      tbody.innerHTML = rows.map(s => `
+        <tr class="border-b border-border/40 hover:bg-white/[0.02] transition-colors">
+          <td class="px-4 py-2.5 font-mono text-xs text-accent">${(s.session_id || '').substring(0, 16)}…</td>
+          <td class="px-4 py-2.5 text-gray-400 whitespace-nowrap">${fmtTime(s.started_at)}</td>
+          <td class="px-4 py-2.5 text-gray-300">${s.camera || '—'}</td>
+          <td class="px-4 py-2.5 text-white font-bold">${s.total_violations ?? 0}</td>
+          <td class="px-4 py-2.5 text-danger">${s.critical ?? 0}</td>
+          <td class="px-4 py-2.5 text-warn">${s.warnings ?? 0}</td>
+        </tr>`).join('');
+    } catch(_) {}
+  }
+
+  // ── Master refresh ────────────────────────────────────────────────
+  function refreshAll() {
+    fetchStats();
+    fetchToday();
+    loadViolations();
+    loadSessions();
+  }
+
+  // ── Auto-refresh every 30s ────────────────────────────────────────
+  setInterval(refreshAll, 30000);
+
+  // ── Boot ──────────────────────────────────────────────────────────
+  refreshAll();
+  connectWS();
+  </script>
+</body>
+</html>

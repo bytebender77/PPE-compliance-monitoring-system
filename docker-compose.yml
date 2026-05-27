@@ -1,0 +1,76 @@
+# ══════════════════════════════════════════════════════════════════════════════
+# docker-compose.yml — PPE Compliance System (CPU / RTSP sources)
+#
+# Start everything:
+#   docker compose up --build
+#
+# Start only the dashboard (after pipeline is already running elsewhere):
+#   docker compose up api
+#
+# With GPU (NVIDIA):
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up --build
+#
+# Multi-camera mode (replaces single pipeline service):
+#   docker compose --profile multi up --build
+# ══════════════════════════════════════════════════════════════════════════════
+
+version: "3.9"
+
+x-common: &common
+  build:
+    context: .
+    dockerfile: Dockerfile
+  env_file: .env
+  restart: unless-stopped
+
+services:
+
+  # ── Single-camera pipeline ─────────────────────────────────────────────────
+  pipeline:
+    <<: *common
+    profiles: ["single", "default"]
+    command: ["pipeline", "--no-display", "--source", "${VIDEO_SOURCE:-video.mp4}"]
+    volumes:
+      - ./logs:/app/logs
+      - ./screenshots:/app/screenshots
+      - ./models:/app/models
+      - ./cameras.yaml:/app/cameras.yaml:ro
+    # Expose webcam on Linux (comment out if using RTSP/MP4)
+    # devices:
+    #   - /dev/video0:/dev/video0
+    depends_on: []
+
+  # ── Multi-camera orchestrator ──────────────────────────────────────────────
+  multi:
+    <<: *common
+    profiles: ["multi"]
+    command: ["multi", "--config", "cameras.yaml"]
+    volumes:
+      - ./logs:/app/logs
+      - ./screenshots:/app/screenshots
+      - ./models:/app/models
+      - ./cameras.yaml:/app/cameras.yaml:ro
+
+  # ── Web dashboard ──────────────────────────────────────────────────────────
+  api:
+    <<: *common
+    profiles: ["single", "default", "multi"]
+    command: ["api"]
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./logs:/app/logs
+      - ./screenshots:/app/screenshots
+    environment:
+      PPE_DB_PATH:         logs/violations.db
+      PPE_SCREENSHOTS_DIR: screenshots
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/stats"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+networks:
+  default:
+    name: ppe_net

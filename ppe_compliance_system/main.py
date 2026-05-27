@@ -1,44 +1,67 @@
 """
-main.py — Stage 1 MVP entry point
+main.py — Stage 4 entry point
 PPE Compliance Monitoring System
 
-This is the top-level runner. It wires together:
-  1. A video source (webcam / MP4 / RTSP)
-  2. The YOLOv8 person detector
-  3. The display / annotation layer
+Wires together:
+  1. VideoSource         — reads frames from webcam / MP4 / RTSP
+  2. PersonDetector      — detects persons using COCO YOLOv8n
+  3. PPEDetector         — detects helmet / safety_vest / goggles (our model)
+  4. ComplianceChecker   — associates PPE with persons, flags violations
+  5. AlertEngine         — tracks violation streaks, fires alerts with cooldown
+  6. FrameAnnotator      — draws boxes, flash border, streak bar, alert log
+  7. FPSCounter          — rolling FPS measurement
 
-Why is this a separate file from the detector?
-  → main.py is "glue code". The detector knows nothing about windows or
-    display — that separation lets us swap the display for a FastAPI
-    WebSocket stream in Stage 3 without touching the detector at all.
+PIPELINE PER FRAME
+──────────────────
+  read → detect persons → detect PPE → check compliance
+       → alert engine → annotate → display
+
+ALERT BEHAVIOUR
+───────────────
+  - Non-compliant for 20 consecutive frames (~0.67 s @ 30 fps) → alert fires
+  - Red flash border appears for 1.2 s
+  - Screenshot auto-saved to screenshots/
+  - Alert log panel shows last 3 alerts (bottom-right corner)
+  - Violation streak progress bar on each non-compliant person box
+  - Per-worker 60-second cooldown prevents alert spam
 
 Run:
-    python main.py                    # webcam (device 0)
-    python main.py --source 0         # webcam explicit
-    python main.py --source video.mp4 # MP4 file
-    python main.py --source rtsp://.. # RTSP stream (Stage 3+)
+    python -m ppe_compliance_system.main                  # webcam
+    python -m ppe_compliance_system.main --source video.mp4
+    python -m ppe_compliance_system.main --source rtsp://...
+    python -m ppe_compliance_system.main --no-display     # headless
 
 Controls (while window is open):
-    Q  →  quit
-    S  →  save screenshot to screenshots/
-    P  →  pause / unpause
+    Q → quit
+    S → save screenshot to screenshots/
+    P → pause / unpause
 """
 
 import argparse
+import os
 import sys
 import logging
 from pathlib import Path
+from datetime import datetime
 
-# ── local imports ──────────────────────────────────────────────────────────────
 from .inference_engine.utils.video_source import VideoSource
 from .inference_engine.detectors.person_detector import PersonDetector
+from .inference_engine.detectors.ppe_detector import PPEDetector
+from .inference_engine.compliance.checker import ComplianceChecker
+from .inference_engine.alerts.engine import AlertEngine
 from .inference_engine.utils.display import FrameAnnotator
 from .inference_engine.utils.fps_counter import FPSCounter
+from .notifications.whatsapp import notifier_from_env
+from .database.logger import ViolationLogger
 from .config.settings import Settings
 
-# ── logging ────────────────────────────────────────────────────────────────────
-# Configure once here at the top level; every other module does
-# `logging.getLogger(__name__)` and inherits this configuration.
+# Load .env file if present — override=True so .env always wins over stale shell vars
+try:
+    from dotenv import load_dotenv
+    load_dotenv(override=True)
+except ImportError:
+    pass
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
@@ -48,148 +71,231 @@ log = logging.getLogger(__name__)
 
 
 def parse_args() -> argparse.Namespace:
-    """Parse CLI arguments.
-
-    Keeping argument parsing in its own function makes it trivially testable
-    (call parse_args(['--source', '0'])) and keeps main() clean.
-    """
     parser = argparse.ArgumentParser(
-        description="PPE Compliance Monitoring System — Stage 1 MVP"
+        description="PPE Compliance Monitoring System — Stage 4 (Alert Engine)"
     )
     parser.add_argument(
-        "--source",
-        default="0",                # "0" → webcam index 0
-        help="Video source: webcam index (0), MP4 path, or RTSP URL",
+        "--source", default="0",
+        help="Video source: webcam index (0), MP4 path, or RTSP URL.",
     )
     parser.add_argument(
-        "--conf",
-        type=float,
-        default=None,               # None → use value from settings.py
-        help="Detection confidence threshold (overrides config)",
+        "--conf", type=float, default=None,
+        help="Person detection confidence threshold (overrides config).",
     )
     parser.add_argument(
-        "--no-display",
-        action="store_true",
-        help="Run headless (no OpenCV window) — useful for server testing",
+        "--ppe-conf", type=float, default=None,
+        help="PPE detection confidence threshold (overrides config).",
+    )
+    parser.add_argument(
+        "--no-display", action="store_true",
+        help="Run headless — no OpenCV window (useful for servers).",
+    )
+    parser.add_argument(
+        "--device", default=None,
+        help="Inference device: cpu / cuda / mps (overrides config).",
+    )
+    parser.add_argument(
+        "--alert-frames", type=int, default=None,
+        help="Consecutive non-compliant frames before alert fires (overrides config).",
+    )
+    parser.add_argument(
+        "--alert-cooldown", type=int, default=None,
+        help="Seconds between repeated alerts per worker (overrides config).",
     )
     return parser.parse_args()
 
 
-def main() -> None:
+def run_pipeline(
+    source_arg: str,
+    camera_label: str,
+    cfg: "Settings",
+    no_display: bool = True,
+    conf_threshold: float = None,
+    ppe_conf_threshold: float = None,
+    device: str = None,
+    alert_frames: int = None,
+    alert_cooldown: int = None,
+) -> None:
     """
-    Main pipeline loop.
+    Full PPE pipeline for ONE camera source.
 
-    The loop is intentionally simple at this stage:
-        read frame → detect → annotate → display → repeat
-
-    Later stages will insert tracking, compliance logic, and alert
-    orchestration BETWEEN detect and annotate without changing this loop's
-    structure — they're just additional function calls on the same frame.
+    Extracted from main() so multi_main.py can call it directly in worker
+    processes without going through argparse.
     """
-    args = parse_args()
-    cfg  = Settings()               # load config/settings.py defaults
+    conf_threshold     = conf_threshold     or cfg.CONFIDENCE_THRESHOLD
+    ppe_conf_threshold = ppe_conf_threshold or cfg.PPE_CONF_THRESHOLD
+    device             = device             or cfg.DEVICE
+    alert_frames       = alert_frames       or cfg.ALERT_FRAME_THRESHOLD
+    alert_cooldown     = alert_cooldown     or cfg.ALERT_COOLDOWN_SECONDS
+    use_half           = (device == "cuda")   # FP16 on CUDA → ~2× speed
 
-    # Allow CLI to override confidence threshold
-    conf_threshold = args.conf if args.conf is not None else cfg.CONFIDENCE_THRESHOLD
-
-    log.info("Starting PPE Compliance Monitoring System — Stage 1 MVP")
-    log.info(f"  Source            : {args.source}")
-    log.info(f"  Confidence thresh : {conf_threshold}")
-    log.info(f"  Model             : {cfg.MODEL_PATH}")
+    log.info(f"[{camera_label}] Starting PPE pipeline")
+    log.info(f"  Source          : {source_arg}")
+    log.info(f"  Person model    : {cfg.MODEL_PATH}  conf={conf_threshold}")
+    log.info(f"  PPE model       : {cfg.PPE_MODEL_PATH}  conf={ppe_conf_threshold}")
+    log.info(f"  Required PPE    : {cfg.REQUIRED_PPE}")
+    log.info(f"  Device          : {device}  FP16={use_half}")
+    log.info(f"  Alert threshold : {alert_frames} frames")
+    log.info(f"  Alert cooldown  : {alert_cooldown}s")
 
     # ── 1. Video source ────────────────────────────────────────────────────────
-    # VideoSource wraps OpenCV's VideoCapture. The string "0" is converted to
-    # integer 0 inside VideoSource so we always pass a plain string here.
-    source = VideoSource(args.source)
+    source = VideoSource(source_arg)
     if not source.is_open():
-        log.error("Could not open video source. Check device index or file path.")
-        sys.exit(1)
+        log.error(f"[{camera_label}] Could not open video source: {source_arg}")
+        return
 
-    # ── 2. Detector ────────────────────────────────────────────────────────────
-    # PersonDetector loads YOLOv8 and exposes a single .detect(frame) method.
-    # This is the ONLY class that knows about YOLO — the rest of the system
-    # works with plain Python dicts (detection results).
-    detector = PersonDetector(
+    # ── 2–3. Detectors ────────────────────────────────────────────────────────
+    person_detector = PersonDetector(
         model_path=cfg.MODEL_PATH,
         conf_threshold=conf_threshold,
-        device=cfg.DEVICE,
+        device=device,
+        half=use_half,
+    )
+    ppe_detector = PPEDetector(
+        model_path=cfg.PPE_MODEL_PATH,
+        conf_threshold=ppe_conf_threshold,
+        device=device,
+        half=use_half,
     )
 
-    # ── 3. Annotation / display ────────────────────────────────────────────────
-    annotator = FrameAnnotator(cfg)
+    # ── 4–5. Compliance + alert ────────────────────────────────────────────────
+    compliance_checker = ComplianceChecker(
+        required_ppe=cfg.REQUIRED_PPE,
+        association_thresh=cfg.PPE_ASSOCIATION_THRESH,
+    )
+    alert_engine = AlertEngine(
+        frame_threshold=alert_frames,
+        cooldown_seconds=alert_cooldown,
+    )
+
+    # ── 6. WhatsApp notifier ───────────────────────────────────────────────────
+    whatsapp = notifier_from_env(camera_label=camera_label)
+    if whatsapp:
+        whatsapp.send_test()
+
+    # ── 7. SQLite logger ───────────────────────────────────────────────────────
+    db_logger = ViolationLogger(
+        db_path=str(Path(cfg.LOG_DIR) / "violations.db"),
+        camera=camera_label,
+    )
+    db_logger.open()
+
+    # ── 8. Display helpers ─────────────────────────────────────────────────────
+    annotator   = FrameAnnotator(cfg)
     fps_counter = FPSCounter()
+    screenshots = Path(cfg.SCREENSHOTS_DIR)
+    screenshots.mkdir(exist_ok=True)
 
-    # Ensure screenshots directory exists for the 'S' key shortcut
-    Path("screenshots").mkdir(exist_ok=True)
+    log.info(f"[{camera_label}] Warming up models…")
+    person_detector.warmup(iterations=2)
+    ppe_detector.warmup(iterations=2)
+    log.info(f"[{camera_label}] Pipeline ready.  Q=quit  S=screenshot  P=pause")
 
-    log.info("Pipeline ready. Press Q to quit, S to save screenshot, P to pause.")
+    paused    = False
+    annotated = None
 
-    paused = False
+    try:
+        while True:
+            if not paused:
+                frame = source.read()
+                if frame is None:
+                    log.info(f"[{camera_label}] Source exhausted. Exiting.")
+                    break
 
-    # ── Main loop ──────────────────────────────────────────────────────────────
-    while True:
-        if not paused:
-            frame = source.read()
-            if frame is None:
-                # End of MP4 file or stream dropped
-                log.info("Video source exhausted or dropped. Exiting.")
-                break
+                persons    = person_detector.detect(frame)
+                ppe_items  = ppe_detector.detect(frame)
+                persons    = compliance_checker.check(persons, ppe_items)
+                new_alerts = alert_engine.update(persons)
 
-            # ── Detect ────────────────────────────────────────────────────────
-            # detections is a list of dicts:
-            # [{"bbox": [x1,y1,x2,y2], "confidence": 0.87, "class_id": 0, "class_name": "person"}, ...]
-            #
-            # STAGE 2 will add tracking IDs to each dict here.
-            # STAGE 3 will add PPE association results here.
-            # The dict structure is intentionally open so future stages can
-            # enrich it without breaking existing code.
-            detections = detector.detect(frame)
+                if new_alerts and annotated is not None:
+                    for a in new_alerts:
+                        log.warning(f"[{camera_label}] ALERT: {a.summary}")
+                        shot_path = _save_screenshot(annotated, screenshots, prefix="alert")
+                        db_logger.log_violation(a, screenshot_path=shot_path)
+                        if whatsapp:
+                            whatsapp.send_alert(a, screenshot_path=shot_path)
 
-            # ── Update FPS ────────────────────────────────────────────────────
-            fps = fps_counter.update()
+                fps = fps_counter.update()
+                streaks = {
+                    p["track_id"]: alert_engine.streak_for(p["track_id"])
+                    for p in persons if p.get("track_id") is not None
+                }
+                annotated = annotator.draw(
+                    frame           = frame,
+                    persons         = persons,
+                    ppe_items       = ppe_items,
+                    fps             = fps,
+                    new_alerts      = new_alerts,
+                    recent_alerts   = alert_engine.recent_alerts,
+                    streaks         = streaks,
+                    alert_threshold = alert_frames,
+                )
 
-            # ── Annotate frame ────────────────────────────────────────────────
-            # annotator draws bboxes, labels, confidence, FPS, and person count.
-            # All drawing logic lives in display.py — none in detector.py.
-            # Separation of concerns: detector detects, annotator draws.
-            annotated = annotator.draw(frame, detections, fps)
+            if not no_display and annotated is not None:
+                import cv2
+                cv2.imshow(f"PPE Monitor — {camera_label}", annotated)
+                key = cv2.waitKey(1) & 0xFF
+                if key == ord("q"):
+                    log.info(f"[{camera_label}] Q pressed — shutting down.")
+                    break
+                elif key == ord("s"):
+                    _save_screenshot(annotated, screenshots)
+                elif key == ord("p"):
+                    paused = not paused
+                    log.info("Paused." if paused else "Resumed.")
 
-        # ── Display ───────────────────────────────────────────────────────────
-        if not args.no_display:
-            import cv2
-            cv2.imshow("PPE Monitor — Stage 1", annotated)
-            key = cv2.waitKey(1) & 0xFF
+    except KeyboardInterrupt:
+        log.info(f"[{camera_label}] Interrupted.")
 
-            if key == ord("q"):
-                log.info("Q pressed — shutting down.")
-                break
-            elif key == ord("s"):
-                _save_screenshot(annotated)
-            elif key == ord("p"):
-                paused = not paused
-                log.info("Paused." if paused else "Resumed.")
+    # ── Summary ────────────────────────────────────────────────────────────────
+    total = alert_engine.total_alerts()
+    log.info(f"[{camera_label}] Session done — {total} alert(s) fired.")
+    stats = db_logger.session_stats()
+    if stats.get("total"):
+        log.info(
+            f"[{camera_label}] DB — total={stats['total']}  "
+            f"critical={stats['critical']}  warnings={stats['warnings']}  "
+            f"no_helmet={stats['no_helmet']}  no_vest={stats['no_vest']}"
+        )
 
-    # ── Cleanup ────────────────────────────────────────────────────────────────
+    db_logger.close()
     source.release()
-    if not args.no_display:
+    if not no_display:
         import cv2
         cv2.destroyAllWindows()
-    log.info("Shutdown complete.")
+    log.info(f"[{camera_label}] Shutdown complete.")
 
 
-def _save_screenshot(frame) -> None:
-    """Save current annotated frame as a timestamped PNG.
+def main() -> None:
+    args         = parse_args()
+    cfg          = Settings()
+    camera_label = os.getenv("WHATSAPP_CAMERA_LABEL", args.source)
 
-    Why a standalone function? So Stage 5 (alert logger) can call this same
-    function when a violation is triggered — no code duplication.
-    """
+    run_pipeline(
+        source_arg         = args.source,
+        camera_label       = camera_label,
+        cfg                = cfg,
+        no_display         = args.no_display,
+        conf_threshold     = args.conf,
+        ppe_conf_threshold = args.ppe_conf,
+        device             = args.device,
+        alert_frames       = args.alert_frames,
+        alert_cooldown     = args.alert_cooldown,
+    )
+
+
+def _save_screenshot(
+    frame,
+    screenshots_dir: Path,
+    prefix: str = "frame",
+) -> Path:
+    """Save annotated frame as a timestamped PNG. Returns the saved path."""
     import cv2
-    from datetime import datetime
-
-    ts   = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]   # ms precision
-    path = Path("screenshots") / f"frame_{ts}.png"
+    ts   = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
+    path = screenshots_dir / f"{prefix}_{ts}.png"
     cv2.imwrite(str(path), frame)
     logging.getLogger(__name__).info(f"Screenshot saved → {path}")
+    return path
 
 
 if __name__ == "__main__":

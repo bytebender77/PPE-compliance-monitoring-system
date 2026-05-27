@@ -1,0 +1,48 @@
+# ══════════════════════════════════════════════════════════════════════════════
+# docker-compose.gpu.yml — GPU override for NVIDIA cards (RTX / A-series)
+#
+# Prerequisites:
+#   1. NVIDIA driver ≥ 525 installed on host
+#   2. nvidia-container-toolkit installed:
+#      https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html
+#
+# Usage (merge with base compose):
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up --build
+#
+# What this override does:
+#   - Switches Docker base image to PyTorch CUDA 12.1 runtime
+#   - Grants GPU access to the pipeline container
+#   - Sets PPE_DEVICE=cuda so models run on GPU (~3-5× faster than CPU)
+#   - Enables FP16 inference automatically (handled in run_pipeline())
+# ══════════════════════════════════════════════════════════════════════════════
+
+version: "3.9"
+
+services:
+  pipeline:
+    build:
+      args:
+        BASE: "pytorch/pytorch:2.3.0-cuda12.1-cudnn8-runtime"
+    environment:
+      PPE_DEVICE: cuda
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  multi:
+    build:
+      args:
+        BASE: "pytorch/pytorch:2.3.0-cuda12.1-cudnn8-runtime"
+    environment:
+      PPE_DEVICE: cuda
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

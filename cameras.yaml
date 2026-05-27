@@ -1,0 +1,70 @@
+# ══════════════════════════════════════════════════════════════════════════════
+# cameras.yaml — Multi-camera configuration for PPE Compliance System
+#
+# Run:
+#   python -m ppe_compliance_system.multi_main              # uses this file
+#   python -m ppe_compliance_system.multi_main --config cameras.yaml
+#
+# Each `cameras` entry spawns an INDEPENDENT worker process.
+# All workers write to the SAME violations.db (SQLite WAL mode handles
+# concurrent writes safely).
+#
+# Required keys per camera: source, label
+# Optional keys per camera: zone, device, conf, ppe_conf,
+#                           alert_frames, alert_cooldown, required_ppe
+# ══════════════════════════════════════════════════════════════════════════════
+
+global:
+  # Inference device for all cameras (override per camera if needed)
+  # Options: cpu | cuda | mps
+  device: cpu
+
+  # Person detection confidence threshold
+  conf: 0.4
+
+  # PPE detection confidence threshold (lower = catch more, more false positives)
+  ppe_conf: 0.10
+
+  # Consecutive non-compliant frames before alert fires (~0.67s @ 30fps)
+  alert_frames: 20
+
+  # Seconds between repeated alerts for the same worker
+  alert_cooldown: 60
+
+  # Comma-separated list of mandatory PPE items
+  required_ppe: "helmet,safety_vest"
+
+  # Shared database path (all cameras write here)
+  db_path: logs/violations.db
+
+  # Directory for auto-saved alert screenshots
+  screenshots_dir: screenshots
+
+  # True = headless (no OpenCV window) — required for multi-camera on servers
+  no_display: true
+
+cameras:
+  # ── Camera 1: Main entrance webcam ──────────────────────────────────────────
+  - source: "0"
+    label: "Gate-1 Entrance"
+    zone: default
+
+  # ── Camera 2: Warehouse floor (MP4 or RTSP) ─────────────────────────────────
+  - source: "video.mp4"
+    label: "Gate-2 Warehouse"
+    zone: default
+    conf: 0.35           # lower confidence for warehouse lighting conditions
+    ppe_conf: 0.08
+
+  # ── Camera 3: Welding bay (goggles required here) ───────────────────────────
+  # - source: "rtsp://192.168.1.100:554/stream1"
+  #   label: "Welding Bay"
+  #   zone: welding_bay
+  #   required_ppe: "helmet,safety_vest,goggles"
+  #   device: cuda       # dedicated GPU for this high-priority camera
+
+  # ── Camera 4: Chemical lab ────────────────────────────────────────────────────
+  # - source: "rtsp://192.168.1.101:554/stream1"
+  #   label: "Chemical Lab"
+  #   zone: chemical_lab
+  #   required_ppe: "helmet,safety_vest,goggles"

@@ -27,16 +27,12 @@ from pathlib import Path
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-CLASS_NAMES = {0: "person", 1: "helmet", 2: "safety_vest", 3: "goggles"}
+CLASS_NAMES = {0: "helmet", 1: "safety_vest", 2: "goggles"}
 
-# Minimum instance counts required in the TRAINING split before training starts.
-# Based on Stage 2 targets from architecture document.
-# Lower targets for goggles — it is a smaller, harder-to-annotate class.
 DEFAULT_MIN_COUNTS = {
-    0: 1000,  # person
-    1: 600,   # helmet
-    2: 600,   # safety_vest
-    3: 400,   # goggles
+    0: 600,   # helmet
+    1: 600,   # safety_vest
+    2: 400,   # goggles — smaller object, lower target
 }
 
 SPLITS = ["train", "val", "test"]
@@ -143,28 +139,23 @@ def main() -> None:
         help="Which split to check (default: all).",
     )
     parser.add_argument(
-        "--min-person", type=int, default=DEFAULT_MIN_COUNTS[0],
-        help=f"Min person instances in train (default: {DEFAULT_MIN_COUNTS[0]}).",
+        "--min-helmet", type=int, default=DEFAULT_MIN_COUNTS[0],
+        help=f"Min helmet instances in train (default: {DEFAULT_MIN_COUNTS[0]}).",
     )
     parser.add_argument(
-        "--min-helmet", type=int, default=DEFAULT_MIN_COUNTS[1],
-        help=f"Min helmet instances in train (default: {DEFAULT_MIN_COUNTS[1]}).",
+        "--min-vest", type=int, default=DEFAULT_MIN_COUNTS[1],
+        help=f"Min safety_vest instances in train (default: {DEFAULT_MIN_COUNTS[1]}).",
     )
     parser.add_argument(
-        "--min-vest", type=int, default=DEFAULT_MIN_COUNTS[2],
-        help=f"Min safety_vest instances in train (default: {DEFAULT_MIN_COUNTS[2]}).",
-    )
-    parser.add_argument(
-        "--min-goggles", type=int, default=DEFAULT_MIN_COUNTS[3],
-        help=f"Min goggles instances in train (default: {DEFAULT_MIN_COUNTS[3]}).",
+        "--min-goggles", type=int, default=DEFAULT_MIN_COUNTS[2],
+        help=f"Min goggles instances in train (default: {DEFAULT_MIN_COUNTS[2]}).",
     )
     args = parser.parse_args()
 
     min_counts = {
-        0: args.min_person,
-        1: args.min_helmet,
-        2: args.min_vest,
-        3: args.min_goggles,
+        0: args.min_helmet,
+        1: args.min_vest,
+        2: args.min_goggles,
     }
 
     data_root = Path(args.data_root)
@@ -174,8 +165,7 @@ def main() -> None:
     print(f"{'═' * 62}")
     print(f"Data root : {data_root.resolve()}")
     print(f"Classes   : {list(CLASS_NAMES.values())}")
-    print(f"Min counts (train): person={min_counts[0]}, helmet={min_counts[1]}, "
-          f"vest={min_counts[2]}, goggles={min_counts[3]}")
+    print(f"Min counts (train): helmet={min_counts[0]}, vest={min_counts[1]}, goggles={min_counts[2]}")
 
     all_failures = []
 
