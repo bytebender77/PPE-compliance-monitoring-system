@@ -35,6 +35,11 @@ Controls (while window is open):
     Q → quit
     S → save screenshot to screenshots/
     P → pause / unpause
+    A → toggle WhatsApp alerts on / off
+
+Model switching:
+    --ppe-model models/best.pt          # default 4-class model
+    --ppe-model models/best_cctv.pt     # CCTV fine-tuned (20m detection)
 """
 
 import argparse
@@ -55,10 +60,11 @@ from .notifications.whatsapp import notifier_from_env
 from .database.logger import ViolationLogger
 from .config.settings import Settings
 
-# Load .env file if present — override=True so .env always wins over stale shell vars
+# Load .env file if present — use explicit path so it works regardless of CWD
 try:
     from dotenv import load_dotenv
-    load_dotenv(override=True)
+    _env_path = Path(__file__).resolve().parent.parent / ".env"
+    load_dotenv(dotenv_path=_env_path, override=True)
 except ImportError:
     pass
 
@@ -102,6 +108,24 @@ def parse_args() -> argparse.Namespace:
         "--alert-cooldown", type=int, default=None,
         help="Seconds between repeated alerts per worker (overrides config).",
     )
+    parser.add_argument(
+        "--no-alerts", action="store_true",
+        help="Mute WhatsApp alerts on startup (violations still logged to DB).",
+    )
+    parser.add_argument(
+        "--zoom", action="store_true",
+        help="Crop-and-zoom mode: run PPE detector on each person crop. "
+             "Improves detection at long range (e.g. 20m CCTV cameras).",
+    )
+    parser.add_argument(
+        "--ppe-model", default=None, dest="ppe_model",
+        help="Path to PPE model weights (overrides config). "
+             "E.g. models/best_cctv.pt for the CCTV fine-tuned model.",
+    )
+    parser.add_argument(
+        "--save-video", default=None, dest="save_video",
+        help="Save annotated output to this path. E.g. output/vestp1_annotated.mp4",
+    )
     return parser.parse_args()
 
 
@@ -115,6 +139,10 @@ def run_pipeline(
     device: str = None,
     alert_frames: int = None,
     alert_cooldown: int = None,
+    alerts_muted: bool = False,
+    zoom_mode: bool = False,
+    ppe_model: str = None,
+    save_video: str = None,
 ) -> None:
     """
     Full PPE pipeline for ONE camera source.
@@ -127,12 +155,16 @@ def run_pipeline(
     device             = device             or cfg.DEVICE
     alert_frames       = alert_frames       or cfg.ALERT_FRAME_THRESHOLD
     alert_cooldown     = alert_cooldown     or cfg.ALERT_COOLDOWN_SECONDS
+    ppe_model_path     = ppe_model          or cfg.PPE_MODEL_PATH
     use_half           = (device == "cuda")   # FP16 on CUDA → ~2× speed
+
+    if zoom_mode:
+        log.info(f"[{camera_label}] Zoom mode ON — crop-and-zoom PPE detection (long-range camera)")
 
     log.info(f"[{camera_label}] Starting PPE pipeline")
     log.info(f"  Source          : {source_arg}")
     log.info(f"  Person model    : {cfg.MODEL_PATH}  conf={conf_threshold}")
-    log.info(f"  PPE model       : {cfg.PPE_MODEL_PATH}  conf={ppe_conf_threshold}")
+    log.info(f"  PPE model       : {ppe_model_path}  conf={ppe_conf_threshold}")
     log.info(f"  Required PPE    : {cfg.REQUIRED_PPE}")
     log.info(f"  Device          : {device}  FP16={use_half}")
     log.info(f"  Alert threshold : {alert_frames} frames")
@@ -144,6 +176,25 @@ def run_pipeline(
         log.error(f"[{camera_label}] Could not open video source: {source_arg}")
         return
 
+    # ── 1b. Optional video writer ──────────────────────────────────────────────
+    video_writer = None
+    if save_video:
+        import cv2 as _cv2
+        save_path = Path(save_video)
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+        # Read first frame to get dimensions, then reopen
+        _test = source.read()
+        if _test is not None:
+            h, w = _test.shape[:2]
+            fourcc = _cv2.VideoWriter_fourcc(*"mp4v")
+            video_writer = _cv2.VideoWriter(str(save_path), fourcc, 25.0, (w, h))
+            log.info(f"[{camera_label}] Recording output → {save_path}  ({w}x{h} @ 25fps)")
+            # Re-open source since we consumed a frame
+            source.release()
+            source = VideoSource(source_arg)
+        else:
+            log.warning("Could not read first frame — video saving disabled.")
+
     # ── 2–3. Detectors ────────────────────────────────────────────────────────
     person_detector = PersonDetector(
         model_path=cfg.MODEL_PATH,
@@ -152,7 +203,7 @@ def run_pipeline(
         half=use_half,
     )
     ppe_detector = PPEDetector(
-        model_path=cfg.PPE_MODEL_PATH,
+        model_path=ppe_model_path,
         conf_threshold=ppe_conf_threshold,
         device=device,
         half=use_half,
@@ -189,10 +240,11 @@ def run_pipeline(
     log.info(f"[{camera_label}] Warming up models…")
     person_detector.warmup(iterations=2)
     ppe_detector.warmup(iterations=2)
-    log.info(f"[{camera_label}] Pipeline ready.  Q=quit  S=screenshot  P=pause")
+    log.info(f"[{camera_label}] Pipeline ready.  Q=quit  S=screenshot  P=pause  A=toggle alerts")
 
-    paused    = False
-    annotated = None
+    paused         = False
+    annotated      = None
+    alerts_enabled = not alerts_muted   # toggle with A key; --no-alerts starts muted
 
     try:
         while True:
@@ -203,7 +255,10 @@ def run_pipeline(
                     break
 
                 persons    = person_detector.detect(frame)
-                ppe_items  = ppe_detector.detect(frame)
+                # Crop-and-zoom mode: run PPE on each person crop
+                # for long-range cameras (e.g. 20m CCTV). Enabled with --zoom.
+                person_boxes = [p["bbox"] for p in persons] if zoom_mode else None
+                ppe_items  = ppe_detector.detect(frame, person_boxes=person_boxes)
                 persons    = compliance_checker.check(persons, ppe_items)
                 new_alerts = alert_engine.update(persons)
 
@@ -212,8 +267,10 @@ def run_pipeline(
                         log.warning(f"[{camera_label}] ALERT: {a.summary}")
                         shot_path = _save_screenshot(annotated, screenshots, prefix="alert")
                         db_logger.log_violation(a, screenshot_path=shot_path)
-                        if whatsapp:
+                        if whatsapp and alerts_enabled:
                             whatsapp.send_alert(a, screenshot_path=shot_path)
+                        elif whatsapp and not alerts_enabled:
+                            log.info(f"[{camera_label}] WhatsApp alerts are muted — violation logged only")
 
                 fps = fps_counter.update()
                 streaks = {
@@ -229,7 +286,12 @@ def run_pipeline(
                     recent_alerts   = alert_engine.recent_alerts,
                     streaks         = streaks,
                     alert_threshold = alert_frames,
+                    alerts_enabled  = alerts_enabled,
                 )
+
+            # Write annotated frame to output video if recording
+            if video_writer is not None and annotated is not None:
+                video_writer.write(annotated)
 
             if not no_display and annotated is not None:
                 import cv2
@@ -243,6 +305,10 @@ def run_pipeline(
                 elif key == ord("p"):
                     paused = not paused
                     log.info("Paused." if paused else "Resumed.")
+                elif key == ord("a"):
+                    alerts_enabled = not alerts_enabled
+                    state = "ON" if alerts_enabled else "OFF (muted)"
+                    log.info(f"[{camera_label}] WhatsApp alerts toggled → {state}")
 
     except KeyboardInterrupt:
         log.info(f"[{camera_label}] Interrupted.")
@@ -260,6 +326,9 @@ def run_pipeline(
 
     db_logger.close()
     source.release()
+    if video_writer is not None:
+        video_writer.release()
+        log.info(f"[{camera_label}] Saved annotated video → {save_video}")
     if not no_display:
         import cv2
         cv2.destroyAllWindows()
@@ -281,6 +350,10 @@ def main() -> None:
         device             = args.device,
         alert_frames       = args.alert_frames,
         alert_cooldown     = args.alert_cooldown,
+        alerts_muted       = args.no_alerts,
+        zoom_mode          = args.zoom,
+        ppe_model          = args.ppe_model,
+        save_video         = args.save_video,
     )
 
 
