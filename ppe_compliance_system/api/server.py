@@ -61,6 +61,9 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
+    # In-memory alert toggle state (shared across requests within this process)
+    app.state.alerts_enabled = True
+
     # Serve screenshots as static files
     if SCREENSHOTS_DIR.exists():
         app.mount("/screenshots", StaticFiles(directory=str(SCREENSHOTS_DIR)), name="screenshots")
@@ -131,6 +134,40 @@ def create_app() -> FastAPI:
         ).fetchall()
         conn.close()
         return {"violations": [dict(r) for r in rows], "date": today}
+
+    @app.delete("/api/clear")
+    async def clear_all():
+        conn = get_db()
+        if not conn:
+            return {"ok": False, "error": "Database not found"}
+        deleted = conn.execute("SELECT COUNT(*) FROM violations").fetchone()[0]
+        conn.execute("DELETE FROM violations")
+        conn.execute("DELETE FROM sessions")
+        conn.commit()
+        conn.close()
+        # Reclaim disk space in a separate connection (VACUUM can't run inside a transaction)
+        try:
+            import sqlite3 as _sql
+            vc = _sql.connect(str(DB_PATH))
+            vc.execute("VACUUM")
+            vc.close()
+        except Exception:
+            pass
+        log.warning(f"All data cleared — {deleted} violation(s) deleted")
+        return {"ok": True, "deleted": deleted}
+
+    # ── Alert toggle ─────────────────────────────────────────────────────────
+
+    @app.get("/api/alerts/state")
+    async def get_alert_state():
+        return {"enabled": app.state.alerts_enabled}
+
+    @app.post("/api/alerts/toggle")
+    async def toggle_alerts():
+        app.state.alerts_enabled = not app.state.alerts_enabled
+        state = "ON" if app.state.alerts_enabled else "MUTED"
+        log.info(f"Dashboard toggled WhatsApp alerts → {state}")
+        return {"enabled": app.state.alerts_enabled, "state": state}
 
     # ── WebSocket — live alert stream ─────────────────────────────────────────
 

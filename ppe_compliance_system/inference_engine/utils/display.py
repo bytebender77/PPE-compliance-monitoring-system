@@ -65,6 +65,7 @@ class FrameAnnotator:
         recent_alerts: Optional[List] = None,
         streaks:       Optional[Dict[int, int]] = None,
         alert_threshold: int = 20,
+        alerts_enabled: bool = True,
     ) -> np.ndarray:
         """
         Draw all annotations on a copy of the frame.
@@ -88,7 +89,7 @@ class FrameAnnotator:
         if new_alerts:
             self._last_alert_time = time.time()
 
-        # 1. Draw PPE item boxes (underneath person boxes for cleaner look)
+        # 1. Draw PPE item boxes (no text on box — text goes to side panel)
         for ppe in ppe_items:
             self._draw_ppe_item(out, ppe)
 
@@ -101,16 +102,19 @@ class FrameAnnotator:
 
         # 3. HUD overlay (top-left)
         total_alerts = len(recent_alerts) if recent_alerts else 0
-        self._draw_hud(out, persons, fps, total_alerts)
+        self._draw_hud(out, persons, fps, total_alerts, alerts_enabled)
 
-        # 4. Alert log panel (bottom-right)
+        # 4. Detection panel (right side) — class names + confidence scores
+        self._draw_detection_panel(out, persons, ppe_items)
+
+        # 5. Alert log panel (bottom-right, above detection panel)
         if recent_alerts:
             self._draw_alert_log(out, recent_alerts)
 
-        # 5. Flash border — red pulse when an alert fires
+        # 6. Flash border — red pulse when an alert fires
         self._draw_flash_border(out)
 
-        # 6. Stage indicator
+        # 7. Stage indicator
         self._draw_stage_label(out)
 
         return out
@@ -145,22 +149,12 @@ class FrameAnnotator:
         else:
             color = self._cfg.PERSON_NONCOMPLIANT_COLOR  # red
 
-        # Draw bounding box
+        # Draw bounding box only — label goes to side panel
         cv2.rectangle(frame, (x1, y1), (x2, y2), color, self._thickness)
 
-        # Build label
-        parts = ["person"]
-        if track_id is not None:
-            parts.append(f"#{track_id}")
-        parts.append(f"[{confidence:.2f}]")
-
-        if is_compliant is True:
-            parts.append("OK")
-        elif is_compliant is False and missing_ppe:
-            parts.append(f"MISSING: {', '.join(missing_ppe)}")
-
-        label = " ".join(parts)
-        self._draw_label(frame, label, x1, y1, color)
+        # Small compliance indicator dot in top-left corner of box
+        dot_color = (0, 220, 0) if is_compliant else (0, 0, 220) if is_compliant is False else (0, 165, 255)
+        cv2.circle(frame, (x1 + 7, y1 + 7), 5, dot_color, cv2.FILLED)
 
         # Violation streak progress bar (shown only on non-compliant persons)
         if is_compliant is False and streak > 0 and alert_threshold > 0:
@@ -170,21 +164,16 @@ class FrameAnnotator:
 
     def _draw_ppe_item(self, frame: np.ndarray, det: Dict[str, Any]) -> None:
         """
-        Draw a PPE item box with its class colour and a thin border.
-
-        Thinner box (thickness=1) so it doesn't overpower person boxes.
+        Draw a PPE item box only — no text on the box.
+        Labels are shown in the side detection panel instead.
         """
         x1, y1, x2, y2 = det["bbox"]
         class_name      = det["class_name"]
-        confidence      = det["confidence"]
-
         color = self._ppe_colors.get(class_name, (200, 200, 200))
-
         # Thinner box for PPE items
         cv2.rectangle(frame, (x1, y1), (x2, y2), color, 1)
-
-        label = f"{class_name} [{confidence:.2f}]"
-        self._draw_label(frame, label, x1, y1, color, font_scale=0.42)
+        # Small colour-coded corner dot to identify the class without text overlap
+        cv2.circle(frame, (x1 + 5, y1 + 5), 4, color, cv2.FILLED)
 
     # ── Label helper ──────────────────────────────────────────────────────────
 
@@ -220,6 +209,90 @@ class FrameAnnotator:
             (255, 255, 255),
             thickness=1, lineType=cv2.LINE_AA,
         )
+
+    # ── Detection panel (right side) ─────────────────────────────────────────
+
+    def _draw_detection_panel(
+        self,
+        frame:     np.ndarray,
+        persons:   List[Dict[str, Any]],
+        ppe_items: List[Dict[str, Any]],
+    ) -> None:
+        """
+        Right-side panel listing all detections with class + confidence.
+        Keeps the frame clean — no text overlapping bounding boxes.
+        """
+        h, w = frame.shape[:2]
+        panel_w  = 230
+        padding  = 8
+        line_h   = 20
+        px       = w - panel_w - 4
+
+        # Collect lines to display
+        lines = []  # (text, color)
+
+        # ── Person detections ──
+        lines.append(("- PERSONS -", (180, 180, 180)))
+        if persons:
+            for i, p in enumerate(persons):
+                tid  = p.get("track_id")
+                conf = p.get("confidence", 0)
+                is_c = p.get("is_compliant")
+                miss = p.get("missing_ppe", [])
+
+                label = f"Person {'#'+str(tid) if tid else str(i+1)}  [{conf:.2f}]"
+                if is_c is True:
+                    status_text = "  OK"
+                    status_color = (60, 220, 60)
+                    lines.append((label, (200, 255, 200)))
+                    lines.append((status_text, status_color))
+                elif is_c is False:
+                    lines.append((label, (80, 80, 255)))
+                    for m in miss:
+                        lines.append((f"  ! {m}", (60, 60, 255)))
+                else:
+                    lines.append((label, (0, 165, 255)))
+        else:
+            lines.append(("  No persons", (120, 120, 120)))
+
+        lines.append(("", (0, 0, 0)))  # spacer
+
+        # ── PPE detections ──
+        lines.append(("- PPE DETECTED -", (180, 180, 180)))
+        if ppe_items:
+            # Group by class for cleaner display
+            seen = {}
+            for item in ppe_items:
+                cn   = item["class_name"]
+                conf = item["confidence"]
+                if cn not in seen or conf > seen[cn]:
+                    seen[cn] = conf
+            for cn, conf in seen.items():
+                color = self._ppe_colors.get(cn, (200, 200, 200))
+                lines.append((f"  {cn}  [{conf:.2f}]", color))
+        else:
+            lines.append(("  None", (120, 120, 120)))
+
+        # Panel height based on content
+        panel_h = len(lines) * line_h + padding * 2 + 16
+        py = max(4, (h - panel_h) // 4)   # upper-right area
+
+        # Semi-transparent dark background
+        overlay = frame.copy()
+        cv2.rectangle(overlay, (px - 4, py), (w - 4, py + panel_h), (15, 15, 15), cv2.FILLED)
+        cv2.addWeighted(overlay, 0.70, frame, 0.30, 0, frame)
+
+        # Header
+        cv2.putText(frame, "DETECTIONS", (px + padding, py + padding + 12),
+                    self._font, 0.45, (100, 200, 255), 1, cv2.LINE_AA)
+
+        # Draw each line
+        for i, (text, color) in enumerate(lines):
+            if not text:
+                continue
+            y = py + padding + 28 + i * line_h
+            cv2.putText(frame, text, (px + padding, y),
+                        self._font, 0.40, color, 1, cv2.LINE_AA)
 
     # ── Streak bar ────────────────────────────────────────────────────────────
 
@@ -301,24 +374,25 @@ class FrameAnnotator:
         panel_h = len(alerts) * line_h + padding * 2 + 16
         panel_w = 310
 
-        px = w - panel_w - 8
+        # Bottom-left (avoids the detection panel on the right)
+        px = 8
         py = h - panel_h - 8
 
         # Semi-transparent dark background
         overlay = frame.copy()
-        cv2.rectangle(overlay, (px, py), (w - 8, h - 8), (20, 20, 20), cv2.FILLED)
+        cv2.rectangle(overlay, (px, py), (px + panel_w, h - 8), (20, 20, 20), cv2.FILLED)
         cv2.addWeighted(overlay, 0.65, frame, 0.35, 0, frame)
 
         # Header
         cv2.putText(frame, "ALERT LOG", (px + padding, py + padding + 12),
-                    self._font, 0.42, (100, 100, 255), 1, cv2.LINE_AA)
+                    self._font, 0.42, (80, 80, 255), 1, cv2.LINE_AA)
 
         # Alert entries (newest at bottom)
         for i, alert in enumerate(alerts):
-            y     = py + padding + 26 + i * line_h
+            y       = py + padding + 26 + i * line_h
             missing = ", ".join(alert.missing_ppe) if alert.missing_ppe else "?"
-            color = (0, 60, 255) if alert.severity == "CRITICAL" else (0, 140, 255)
-            line  = f"{alert.time_str}  W#{alert.track_id}  -{missing}"
+            color   = (60, 60, 255) if alert.severity == "CRITICAL" else (60, 140, 255)
+            line    = f"{alert.time_str}  W#{alert.track_id}  -{missing}"
             cv2.putText(frame, line, (px + padding, y),
                         self._font, 0.38, color, 1, cv2.LINE_AA)
 
@@ -326,25 +400,28 @@ class FrameAnnotator:
 
     def _draw_hud(
         self,
-        frame:        np.ndarray,
-        persons:      List[Dict[str, Any]],
-        fps:          float,
-        total_alerts: int = 0,
+        frame:          np.ndarray,
+        persons:        List[Dict[str, Any]],
+        fps:            float,
+        total_alerts:   int  = 0,
+        alerts_enabled: bool = True,
     ) -> None:
-        """Top-left HUD: FPS, person count, compliance summary, alert count."""
+        """Top-left HUD: FPS, person count, compliance summary, alert status."""
         total      = len(persons)
         compliant  = sum(1 for p in persons if p.get("is_compliant") is True)
         violations = sum(1 for p in persons if p.get("is_compliant") is False)
 
+        alert_status = "ON" if alerts_enabled else "MUTED"
         lines = [
             f"FPS: {fps:.1f}",
             f"Persons: {total}",
             f"Compliant: {compliant}",
+            f"Alerts: {alert_status}",
         ]
         if violations:
             lines.append(f"Violations: {violations}")
         if total_alerts:
-            lines.append(f"Alerts fired: {total_alerts}")
+            lines.append(f"Fired: {total_alerts}")
 
         padding = 8
         line_h  = 22
@@ -358,8 +435,11 @@ class FrameAnnotator:
         for i, line in enumerate(lines):
             if "Violations" in line:
                 text_color = (80, 80, 255)
-            elif "Alerts" in line:
+            elif "Fired" in line:
                 text_color = (60, 60, 255)
+            elif "Alerts:" in line:
+                # Green when ON, amber when MUTED
+                text_color = (60, 220, 60) if alerts_enabled else (0, 165, 255)
             else:
                 text_color = (200, 255, 200)
             y = padding + (i + 1) * line_h

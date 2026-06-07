@@ -111,6 +111,18 @@
         class="text-xs px-3 py-1.5 rounded-md bg-accent/20 border border-accent/40 hover:bg-accent/30 transition-colors text-accent font-medium">
         ↺ Refresh
       </button>
+
+      <!-- alert toggle btn -->
+      <button id="alert-toggle-btn" onclick="toggleAlerts()"
+        class="text-xs px-3 py-1.5 rounded-md bg-green-500/20 border border-green-500/40 hover:bg-green-500/30 transition-colors text-green-400 font-medium">
+        🔔 Alerts: ON
+      </button>
+
+      <!-- clear all btn -->
+      <button onclick="clearAllData()"
+        class="text-xs px-3 py-1.5 rounded-md bg-danger/20 border border-danger/40 hover:bg-danger/30 transition-colors text-danger font-medium">
+        🗑 Clear All
+      </button>
     </div>
   </header>
 
@@ -534,6 +546,69 @@
     } catch(_) {}
   }
 
+  // ── Alert toggle ──────────────────────────────────────────────────
+  let alertsEnabled = true;
+
+  async function toggleAlerts() {
+    try {
+      const res  = await fetch('/api/alerts/toggle', { method: 'POST' });
+      const data = await res.json();
+      alertsEnabled = data.enabled;
+      const btn = document.getElementById('alert-toggle-btn');
+      if (alertsEnabled) {
+        btn.textContent = '🔔 Alerts: ON';
+        btn.className   = 'text-xs px-3 py-1.5 rounded-md bg-green-500/20 border border-green-500/40 hover:bg-green-500/30 transition-colors text-green-400 font-medium';
+      } else {
+        btn.textContent = '🔕 Alerts: MUTED';
+        btn.className   = 'text-xs px-3 py-1.5 rounded-md bg-yellow-500/20 border border-yellow-500/40 hover:bg-yellow-500/30 transition-colors text-yellow-400 font-medium';
+      }
+    } catch(e) {
+      console.error('Alert toggle failed:', e);
+    }
+  }
+
+  // Sync toggle state with server on load
+  async function syncAlertState() {
+    try {
+      const res  = await fetch('/api/alerts/state');
+      const data = await res.json();
+      alertsEnabled = data.enabled;
+      const btn = document.getElementById('alert-toggle-btn');
+      if (!alertsEnabled) {
+        btn.textContent = '🔕 Alerts: MUTED';
+        btn.className   = 'text-xs px-3 py-1.5 rounded-md bg-yellow-500/20 border border-yellow-500/40 hover:bg-yellow-500/30 transition-colors text-yellow-400 font-medium';
+      }
+    } catch(e) { /* server may not have this endpoint yet */ }
+  }
+
+  // ── Clear all data ────────────────────────────────────────────────
+  async function clearAllData() {
+    if (!confirm('Delete ALL violations and sessions from the database?\n\nThis cannot be undone.')) return;
+    try {
+      const res  = await fetch('/api/clear', { method: 'DELETE' });
+      const data = await res.json();
+      if (data.ok) {
+        liveCount = 0;
+        document.getElementById('live-count').textContent = '0 new';
+        document.getElementById('live-feed').innerHTML =
+          '<div class="text-xs text-gray-500 text-center py-8">Waiting for live alerts…</div>';
+        refreshAll();
+        const btn = document.querySelector('button[onclick="clearAllData()"]');
+        const orig = '🗑 Clear All';
+        btn.textContent = `✓ Cleared ${data.deleted} records`;
+        btn.classList.replace('text-danger','text-safe');
+        btn.classList.replace('bg-danger\\/20','bg-safe\\/20');
+        btn.classList.replace('border-danger\\/40','border-safe\\/40');
+        setTimeout(() => {
+          btn.textContent = orig;
+          btn.classList.replace('text-safe','text-danger');
+          btn.classList.replace('bg-safe\\/20','bg-danger\\/20');
+          btn.classList.replace('border-safe\\/40','border-danger\\/40');
+        }, 2500);
+      }
+    } catch(e) { alert('Clear failed: ' + e); }
+  }
+
   // ── Master refresh ────────────────────────────────────────────────
   function refreshAll() {
     fetchStats();
@@ -548,6 +623,7 @@
   // ── Boot ──────────────────────────────────────────────────────────
   refreshAll();
   connectWS();
+  syncAlertState();
   </script>
 </body>
 </html>

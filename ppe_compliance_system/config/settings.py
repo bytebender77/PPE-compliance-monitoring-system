@@ -37,9 +37,10 @@ class Settings:
     CONFIDENCE_THRESHOLD: float = field(
         default_factory=lambda: float(os.getenv("PPE_CONF_THRESHOLD", "0.4"))
     )
-    # PPE detector — slightly lower so we don't miss partially visible items.
+    # PPE detector — low threshold so we don't miss partially visible items.
+    # vest detection benefits from a lower threshold (0.05).
     PPE_CONF_THRESHOLD: float = field(
-        default_factory=lambda: float(os.getenv("PPE_PPE_CONF_THRESHOLD", "0.10"))
+        default_factory=lambda: float(os.getenv("PPE_PPE_CONF_THRESHOLD", "0.05"))
     )
 
     # ── Inference device ───────────────────────────────────────────────────────
@@ -59,6 +60,7 @@ class Settings:
         "helmet":       (0, 255, 255),    # yellow
         "safety_vest":  (255, 165, 0),    # blue-orange
         "goggles":      (255, 0, 255),    # magenta
+        "gloves":       (0, 255, 128),    # green-cyan
     })
 
     FONT_SCALE: float  = 0.55
@@ -70,11 +72,14 @@ class Settings:
         0: "helmet",
         1: "safety_vest",
         2: "goggles",
+        3: "gloves",
     })
 
     # ── Compliance rules ───────────────────────────────────────────────────────
     # Which PPE items are mandatory. Any person missing one of these is flagged.
     # Extend for zone-specific rules in Stage 4.
+    # Only helmet and safety_vest trigger alerts — goggles are detected
+    # but NOT required for compliance checks / alert firing.
     REQUIRED_PPE: list = field(
         default_factory=lambda: os.getenv(
             "PPE_REQUIRED", "helmet,safety_vest"
@@ -90,6 +95,8 @@ class Settings:
         "default":      ["helmet", "safety_vest"],
         "welding_bay":  ["helmet", "safety_vest", "goggles"],
         "chemical_lab": ["helmet", "safety_vest", "goggles"],
+        "assembly_line":["helmet", "safety_vest", "gloves"],
+        "full_zone":    ["helmet", "safety_vest", "goggles", "gloves"],
     })
 
     # ── Alert thresholds (Stage 5) ─────────────────────────────────────────────
