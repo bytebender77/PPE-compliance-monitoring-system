@@ -59,17 +59,22 @@ class PPEDetector:
         conf_threshold: float = 0.35,
         device: str = "cpu",
         half: bool = False,
+        imgsz: int = 640,
     ) -> None:
         self.model_path     = model_path
         self.conf_threshold = conf_threshold
         self.device         = device
         # FP16 only works on CUDA — silently disable on CPU/MPS
         self.half           = half and device == "cuda"
+        # Inference resolution. Model trained at 640; running larger (e.g. 960)
+        # gives the detector more pixels on the jacket → better recall, at the
+        # cost of speed. Tune with --ppe-imgsz.
+        self.imgsz          = imgsz
         self._model         = None   # lazy-loaded on first detect() call
 
         log.info(
             f"PPEDetector initialised | model={model_path} "
-            f"conf={conf_threshold} device={device} half={self.half}"
+            f"conf={conf_threshold} device={device} half={self.half} imgsz={imgsz}"
         )
 
     def _load_model(self) -> None:
@@ -123,6 +128,7 @@ class PPEDetector:
             frame,
             conf=self.conf_threshold,
             classes=_ACTIVE_CLASS_IDS,
+            imgsz=self.imgsz,
             verbose=False,
             device=self.device,
             half=self.half,
@@ -143,7 +149,8 @@ class PPEDetector:
                     "class_name": class_name,
                     "track_id":   None,
                 })
-        log.debug(f"PPE detected (full): {len(detections)} item(s)")
+        summary = ", ".join(d["class_name"] + f"({d['confidence']:.2f})" for d in detections)
+        log.debug(f"PPE raw detections: [{summary}]" if detections else "PPE raw detections: []")
         return detections
 
     def _detect_zoomed(

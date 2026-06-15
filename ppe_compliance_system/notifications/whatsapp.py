@@ -271,7 +271,6 @@ class WhatsAppNotifier:
             f"{emoji} *PPE VIOLATION DETECTED*\n"
             f"{'─' * 30}\n"
             f"📍 *Location* : {self._camera}\n"
-            f"👷 *Worker*   : #{alert.track_id}\n"
             f"❌ *Missing*  : {missing}\n"
             f"🕐 *Time*     : {alert.time_str}\n"
             f"⚡ *Severity* : {alert.severity}\n"

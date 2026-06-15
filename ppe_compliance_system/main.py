@@ -52,6 +52,7 @@ from datetime import datetime
 from .inference_engine.utils.video_source import VideoSource
 from .inference_engine.detectors.person_detector import PersonDetector
 from .inference_engine.detectors.ppe_detector import PPEDetector
+from .inference_engine.detectors.ppe_smoother import PPESmoother
 from .inference_engine.compliance.checker import ComplianceChecker
 from .inference_engine.alerts.engine import AlertEngine
 from .inference_engine.utils.display import FrameAnnotator
@@ -93,6 +94,12 @@ def parse_args() -> argparse.Namespace:
         help="PPE detection confidence threshold (overrides config).",
     )
     parser.add_argument(
+        "--ppe-imgsz", type=int, default=1280, dest="ppe_imgsz",
+        help="PPE inference resolution (default 1280 — gives the model enough "
+             "pixels on the jacket for reliable live detection). Lower to 640 "
+             "for max speed on weak hardware (less reliable vest detection).",
+    )
+    parser.add_argument(
         "--no-display", action="store_true",
         help="Run headless — no OpenCV window (useful for servers).",
     )
@@ -126,6 +133,11 @@ def parse_args() -> argparse.Namespace:
         "--save-video", default=None, dest="save_video",
         help="Save annotated output to this path. E.g. output/vestp1_annotated.mp4",
     )
+    parser.add_argument(
+        "--frame-skip", type=int, default=3, dest="frame_skip",
+        help="Run inference every N frames (default 3). Higher = faster but less smooth. "
+             "The PPE smoother holds detections ~1.5s so higher skip stays stable.",
+    )
     return parser.parse_args()
 
 
@@ -143,6 +155,8 @@ def run_pipeline(
     zoom_mode: bool = False,
     ppe_model: str = None,
     save_video: str = None,
+    frame_skip: int = 3,
+    ppe_imgsz: int = 1280,
 ) -> None:
     """
     Full PPE pipeline for ONE camera source.
@@ -207,7 +221,12 @@ def run_pipeline(
         conf_threshold=ppe_conf_threshold,
         device=device,
         half=use_half,
+        imgsz=ppe_imgsz,
     )
+
+    # PPE detection persistence — bridges intermittent live detections so the
+    # vest box and compliance status don't flicker (~1.5 s hold at 30 fps).
+    ppe_smoother = PPESmoother(ttl_frames=45)
 
     # ── 4–5. Compliance + alert ────────────────────────────────────────────────
     compliance_checker = ComplianceChecker(
@@ -245,6 +264,7 @@ def run_pipeline(
     paused         = False
     annotated      = None
     alerts_enabled = not alerts_muted   # toggle with A key; --no-alerts starts muted
+    _frame_idx     = 0
 
     try:
         while True:
@@ -254,11 +274,24 @@ def run_pipeline(
                     log.info(f"[{camera_label}] Source exhausted. Exiting.")
                     break
 
+                _frame_idx += 1
+                # Skip inference on intermediate frames — display last annotated frame
+                # to keep window responsive without running YOLO on every frame.
+                if frame_skip > 1 and (_frame_idx % frame_skip != 0):
+                    if not no_display and annotated is not None:
+                        import cv2
+                        cv2.imshow(f"PPE Monitor — {camera_label}", annotated)
+                        key = cv2.waitKey(1) & 0xFF
+                        if key == ord("q"):
+                            break
+                    continue
+
                 persons    = person_detector.detect(frame)
                 # Crop-and-zoom mode: run PPE on each person crop
                 # for long-range cameras (e.g. 20m CCTV). Enabled with --zoom.
                 person_boxes = [p["bbox"] for p in persons] if zoom_mode else None
                 ppe_items  = ppe_detector.detect(frame, person_boxes=person_boxes)
+                ppe_items  = ppe_smoother.update(ppe_items)   # persist intermittent hits
                 persons    = compliance_checker.check(persons, ppe_items)
                 new_alerts = alert_engine.update(persons)
 
@@ -354,6 +387,8 @@ def main() -> None:
         zoom_mode          = args.zoom,
         ppe_model          = args.ppe_model,
         save_video         = args.save_video,
+        frame_skip         = args.frame_skip,
+        ppe_imgsz          = args.ppe_imgsz,
     )
 
 
