@@ -37,10 +37,12 @@ class Settings:
     CONFIDENCE_THRESHOLD: float = field(
         default_factory=lambda: float(os.getenv("PPE_CONF_THRESHOLD", "0.4"))
     )
-    # PPE detector — low threshold so we don't miss partially visible items.
-    # vest detection benefits from a lower threshold (0.05).
+    # PPE detector threshold. The custom model has modest live precision, so a
+    # low threshold (e.g. 0.05) lets noise fire on all 4 classes. Real jacket
+    # hits are strong (0.3-0.6); junk sits at 0.05-0.18. 0.3 + PPESmoother gives
+    # clean, stable detections. Override per-run with --ppe-conf.
     PPE_CONF_THRESHOLD: float = field(
-        default_factory=lambda: float(os.getenv("PPE_PPE_CONF_THRESHOLD", "0.05"))
+        default_factory=lambda: float(os.getenv("PPE_PPE_CONF_THRESHOLD", "0.3"))
     )
 
     # ── Inference device ───────────────────────────────────────────────────────

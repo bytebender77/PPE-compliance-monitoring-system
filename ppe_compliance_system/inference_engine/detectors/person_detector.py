@@ -63,6 +63,7 @@ class PersonDetector:
         conf_threshold: float = 0.4,
         device: str = "cpu",
         half: bool = False,
+        track: bool = True,
     ) -> None:
         self.model_path      = model_path
         self.conf_threshold  = conf_threshold
@@ -71,9 +72,28 @@ class PersonDetector:
         self.half            = half and device == "cuda"
         self._model          = None          # lazy-loaded on first detect() call
 
+        # ── ByteTrack (Supervision) — assigns a stable track_id to each person ──
+        # Without a tracker, track_id is always None, which silently disables the
+        # alert-streak logic and per-worker temporal smoothing downstream. ByteTrack
+        # follows each worker across frames so a transient missed detection doesn't
+        # reset their compliance state or spawn a duplicate alert.
+        self.track   = track
+        self._tracker = None
+        if self.track:
+            try:
+                import supervision as sv
+                self._tracker = sv.ByteTrack()
+                log.info("ByteTrack tracker enabled (supervision)")
+            except ImportError:
+                log.warning(
+                    "supervision not installed — tracking disabled "
+                    "(track_id will stay None). Run: pip install supervision"
+                )
+                self.track = False
+
         log.info(
             f"PersonDetector initialised | model={model_path} "
-            f"conf={conf_threshold} device={device} half={self.half}"
+            f"conf={conf_threshold} device={device} half={self.half} track={self.track}"
         )
 
     # ── Model loading ──────────────────────────────────────────────────────────
@@ -172,7 +192,44 @@ class PersonDetector:
                     # "is_compliant": True,    — boolean compliance flag
                 })
 
+        # ── Assign stable track IDs via ByteTrack ──────────────────────────────
+        if self.track and self._tracker is not None and detections:
+            detections = self._assign_track_ids(detections)
+
         log.debug(f"Detected {len(detections)} person(s) in frame")
+        return detections
+
+    def _assign_track_ids(self, detections: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Run ByteTrack over this frame's person boxes and write a stable track_id
+        back onto each detection dict.
+
+        ByteTrack matches current boxes to tracks from previous frames (by IoU +
+        motion), so the same worker keeps the same id across frames. Detections
+        that the tracker can't confidently associate are dropped from its output;
+        we leave those with track_id=None rather than discard them.
+        """
+        import numpy as np
+        import supervision as sv
+
+        sv_det = sv.Detections(
+            xyxy=np.array([d["bbox"] for d in detections], dtype=float),
+            confidence=np.array([d["confidence"] for d in detections], dtype=float),
+            class_id=np.array([d["class_id"] for d in detections], dtype=int),
+        )
+
+        tracked = self._tracker.update_with_detections(sv_det)
+
+        # Match tracked boxes back to our dicts by bbox identity (ByteTrack returns
+        # the same xyxy it was given for confirmed tracks).
+        for i in range(len(tracked)):
+            tx1, ty1, tx2, ty2 = (int(v) for v in tracked.xyxy[i])
+            tid = tracked.tracker_id[i] if tracked.tracker_id is not None else None
+            for d in detections:
+                if d["bbox"] == [tx1, ty1, tx2, ty2]:
+                    d["track_id"] = int(tid) if tid is not None else None
+                    break
+
         return detections
 
     # ── Utility ────────────────────────────────────────────────────────────────

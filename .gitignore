@@ -73,3 +73,19 @@ debug_snapshot.jpg
 *.swo
 .DS_Store
 Thumbs.db
+
+# ── Roboflow dataset exports, merged datasets & archives (large, regenerable) ──
+*.zip
+*.yolov8*/
+data/merged_*/
+data/full_merged/
+data/auto_annotated/
+data/gloves_raw/
+data/goggles_finetune/
+data/ppe_capture/
+data/vest_to_annotate/
+data/zoomed_crops/
+data/zoomed_crops_annotated/
+data/raw/
+final_data/
+pptx_unpacked/
