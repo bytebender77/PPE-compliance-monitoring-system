@@ -13,7 +13,10 @@
 
 | Feature | Details |
 |---|---|
-| **Dual-model detection** | YOLOv8n (persons) + YOLOv8s custom (helmet, vest, goggles) |
+| **Dual-model detection** | YOLOv8n (persons) + YOLOv8s custom (helmet, vest, goggles, gloves) |
+| **Stable tracking** | Standalone ByteTrack pipeline — persistent worker IDs, debounced verdicts, no flickering boxes (`ppe_tracking_pipeline/`) |
+| **Near + far coverage** | Two PPE models — `merged_v6` (close, 4-class) and `far_ppe` (20 m CCTV, 1280px) |
+| **Threaded live path** | Decoupled capture + inference threads keep the display at 25–30 FPS |
 | **Compliance checking** | Spatial association of PPE items to workers |
 | **Alert engine** | Per-worker streak tracking → fires after N consecutive non-compliant frames |
 | **WhatsApp alerts** | Screenshot + violation details sent via Meta Cloud API |
@@ -38,6 +41,54 @@
 | Helmet | 0.844 |
 | Safety Vest | 0.885 |
 | Goggles | 0.963 |
+
+> Figures from the deployed model. A 4-class expansion (`merged_v6`, **44,425 images** — helmet, vest, goggles, gloves) is in training; swap in its numbers when complete.
+
+### CCTV / distance model (`far_ppe`)
+
+A dedicated high-resolution model for ~20 m camera range (helmet + vest), trained at **1280px**:
+
+| Class | mAP@0.5 (1280px) |
+|---|---|
+| Helmet | 0.990 |
+| Safety vest | 0.995 |
+
+> Validated on a single-session set — strong, but validate on independent footage before trusting at scale.
+
+---
+
+## Two-Model Strategy & Stable Tracking
+
+**Two PPE models, picked per scene** (via `--ppe-model`) — you never run both at once:
+
+| Model | Classes | Train res | Best for |
+|---|---|---|---|
+| `merged_v6` | 4 (helmet, vest, goggles, gloves) | 640px | close / mid-range · dashboard |
+| `far_ppe` | 2 (helmet, vest) | 1280px | 20 m CCTV distance |
+
+`merged_v6` gives the full PPE check up close; `far_ppe` recovers tiny distant PPE that a 640px model goes blind on. A future per-person **crop-zoom** step will let one model handle every distance.
+
+### Standalone tracking pipeline (`ppe_tracking_pipeline/`)
+
+A self-contained, portable pipeline that fixes flickering boxes with **multi-object tracking** — it imports nothing from the main package, so you can copy the folder to a GPU box and run:
+
+- **ByteTrack** gives each worker a persistent ID that survives missed frames (boxes don't vanish)
+- **Two-layer temporal smoothing** — *presence* (a PPE class counts as worn if seen in ≥40% of the last 15 frames) + *status hysteresis* (12 bad frames to flag a violation, 12 good to clear)
+
+```bash
+cd ppe_tracking_pipeline
+pip install -r requirements.txt
+
+# webcam on a GPU box
+python run.py --source 0 --device cuda
+
+# CCTV clip with the far model
+python run.py --source clip.mp4 --device cuda \
+    --ppe-model runs/detect/far_ppe_1280/weights/best.pt \
+    --ppe-imgsz 1280 --required helmet,safety_vest --save out.mp4
+```
+
+See [`ppe_tracking_pipeline/WINDOWS_SETUP.md`](ppe_tracking_pipeline/WINDOWS_SETUP.md) for the full GPU setup and [`RECORDING_GUIDE.md`](ppe_tracking_pipeline/RECORDING_GUIDE.md) for batch-recording annotated clips.
 
 ---
 
@@ -153,13 +204,15 @@ PPE-compliance-monitoring-system/
 │   ├── inference_engine/
 │   │   ├── detectors/
 │   │   │   ├── person_detector.py YOLOv8n — detects persons
-│   │   │   └── ppe_detector.py    YOLOv8s custom — helmet/vest/goggles
+│   │   │   └── ppe_detector.py    YOLOv8s custom — helmet/vest/goggles/gloves
 │   │   ├── compliance/
 │   │   │   └── checker.py         Associates PPE to workers (IoU-based)
 │   │   ├── alerts/
 │   │   │   └── engine.py          Streak tracking, cooldown, Alert dataclass
 │   │   └── utils/
 │   │       ├── video_source.py    Webcam / MP4 / RTSP abstraction
+│   │       ├── threaded_video.py  Background capture thread (always-latest frame)
+│   │       ├── inference_worker.py Background inference thread (decoupled display)
 │   │       ├── display.py         All OpenCV annotation (boxes, HUD, flash)
 │   │       └── fps_counter.py     Rolling FPS counter
 │   │
@@ -173,9 +226,19 @@ PPE-compliance-monitoring-system/
 │       ├── server.py              FastAPI — REST + WebSocket endpoints
 │       └── static/index.html      Live dashboard (dark-theme SPA)
 │
+├── ppe_tracking_pipeline/         Standalone ByteTrack pipeline (portable, GPU box)
+│   ├── run.py                     Entry point — live / file, threaded
+│   ├── config.py                  All tunables (tracker, window, hysteresis)
+│   ├── pipeline/                  tracker · detector · association · state · renderer
+│   ├── record_*.bat               Windows batch recorders (annotated mp4)
+│   ├── WINDOWS_SETUP.md           Full Windows + NVIDIA setup guide
+│   └── RECORDING_GUIDE.md         How to batch-record annotated test clips
+│
 ├── scripts/
 │   ├── train.py                   YOLOv8 fine-tuning script
 │   ├── eval.py                    Evaluation on test split (mAP, per-class)
+│   ├── build_merged_v6.py         Merge 3 sources → 4-class merged_v6 dataset
+│   ├── predict_sidelabels.py      Predict with side-placed, non-overlapping labels → mp4
 │   ├── export_model.py            Export to ONNX / TensorRT for production
 │   ├── view_violations.py         CLI viewer for violations.db
 │   └── resize_dataset.py          Resize dataset images in-place (640×640)
@@ -252,6 +315,9 @@ Set `PPE_MODEL_PATH=models/best.engine PPE_DEVICE=cuda` in `.env` to use the exp
 | 5 | ✅ | SQLite violation logger |
 | 6 | ✅ | FastAPI dashboard + WebSocket live feed |
 | 7 | ✅ | Docker, multi-camera, FP16 GPU inference, ONNX/TensorRT export |
+| 8 | ✅ | Standalone ByteTrack tracking pipeline + threaded live inference |
+| 9 | 🚧 | Two-model near+far detection (`merged_v6` 4-class · `far_ppe` 1280px CCTV) |
+| 10 | 🔜 | Per-person crop-zoom — one model, all distances |
 
 ---
 
@@ -259,9 +325,9 @@ Set `PPE_MODEL_PATH=models/best.engine PPE_DEVICE=cuda` in `.env` to use the exp
 
 | Layer | Technology |
 |---|---|
-| Person detection | YOLOv8n (COCO pretrained) |
-| PPE detection | YOLOv8s (custom trained — helmet, vest, goggles) |
-| Video I/O | OpenCV |
+| Person detection / tracking | YOLOv8n (COCO pretrained) + ByteTrack |
+| PPE detection | YOLOv8s (custom trained — helmet, vest, goggles, gloves) |
+| Video I/O | OpenCV (threaded capture + inference) |
 | Alert notifications | Meta WhatsApp Cloud API |
 | Database | SQLite (WAL mode) |
 | Backend API | FastAPI + Uvicorn |
