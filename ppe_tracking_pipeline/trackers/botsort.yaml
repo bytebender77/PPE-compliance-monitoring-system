@@ -1,0 +1,17 @@
+# BoT-SORT reference config (ultralytics format).
+# Use this tracker when workers cross / occlude often — it adds global motion
+# compensation and optional ReID appearance matching to survive occlusion.
+# run.py generates the effective file from config.py at launch.
+tracker_type: botsort
+track_high_thresh: 0.25
+track_low_thresh: 0.1
+new_track_thresh: 0.25
+track_buffer: 30
+match_thresh: 0.8
+fuse_score: True
+# BoT-SORT specifics
+gmc_method: sparseOptFlow   # global motion compensation (helps moving/CCTV cams)
+proximity_thresh: 0.5
+appearance_thresh: 0.8
+with_reid: False            # set True (+ a ReID model) for heavy-occlusion scenes
+model: auto

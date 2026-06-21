@@ -45,11 +45,14 @@ Model switching:
 import argparse
 import os
 import sys
+import time
 import logging
 from pathlib import Path
 from datetime import datetime
 
 from .inference_engine.utils.video_source import VideoSource
+from .inference_engine.utils.threaded_video import ThreadedVideoStream
+from .inference_engine.utils.inference_worker import InferenceWorker
 from .inference_engine.detectors.person_detector import PersonDetector
 from .inference_engine.detectors.ppe_detector import PPEDetector
 from .inference_engine.detectors.ppe_smoother import PPESmoother
@@ -261,90 +264,187 @@ def run_pipeline(
     ppe_detector.warmup(iterations=2)
     log.info(f"[{camera_label}] Pipeline ready.  Q=quit  S=screenshot  P=pause  A=toggle alerts")
 
-    paused         = False
     annotated      = None
     alerts_enabled = not alerts_muted   # toggle with A key; --no-alerts starts muted
-    _frame_idx     = 0
 
-    try:
-        while True:
-            if not paused:
-                frame = source.read()
+    # Live sources (webcam / RTSP / HTTP) run the threaded pipeline for a smooth,
+    # lag-free feed. Recorded files run the simple synchronous loop so every frame
+    # is preserved in the output.
+    src_str = str(source_arg)
+    is_live = src_str.isdigit() or src_str.lower().startswith(
+        ("rtsp://", "http://", "https://")
+    )
+
+    # ── Shared detection step — one definition used by both loops ───────────────
+    def _process(frame):
+        persons      = person_detector.detect(frame)
+        # Crop-and-zoom mode: run PPE on each person crop for long-range cameras
+        # (e.g. 20m CCTV). Enabled with --zoom.
+        person_boxes = [p["bbox"] for p in persons] if zoom_mode else None
+        ppe_items    = ppe_detector.detect(frame, person_boxes=person_boxes)
+        ppe_items    = ppe_smoother.update(ppe_items)   # persist intermittent hits
+        persons      = compliance_checker.check(persons, ppe_items)
+        new_alerts   = alert_engine.update(persons)
+        return persons, ppe_items, new_alerts
+
+    def _handle_alerts(new_alerts, annotated_frame, alerts_on):
+        for a in new_alerts:
+            log.warning(f"[{camera_label}] ALERT: {a.summary}")
+            shot_path = _save_screenshot(annotated_frame, screenshots, prefix="alert")
+            db_logger.log_violation(a, screenshot_path=shot_path)
+            if whatsapp and alerts_on:
+                whatsapp.send_alert(a, screenshot_path=shot_path)
+            elif whatsapp and not alerts_on:
+                log.info(f"[{camera_label}] WhatsApp alerts are muted — violation logged only")
+
+    if is_live:
+        # ── LIVE: threaded capture + threaded inference ─────────────────────────
+        # Capture runs on its own thread (always-latest frame, drops stale) and
+        # the detection pipeline runs on a second thread. This loop only grabs the
+        # freshest frame, overlays the most recent detections, and displays — so
+        # the window stays smooth (25–30 fps) even though the model runs at ~6 fps
+        # on 1280px. --frame-skip is ignored here: the worker simply processes as
+        # fast as it can and skips whatever it can't keep up with.
+        source.release()   # drop the synchronous probe handle; use the threaded stream
+        stream = ThreadedVideoStream(source_arg).start()
+        if not stream.is_open():
+            log.error(f"[{camera_label}] Could not open live source: {source_arg}")
+            return
+        worker = InferenceWorker(stream, _process).start()
+        log.info(f"[{camera_label}] Threaded live pipeline running (capture + inference threads).")
+
+        last_handled_seq = -1
+        try:
+            while True:
+                seq, frame = stream.read()
                 if frame is None:
-                    log.info(f"[{camera_label}] Source exhausted. Exiting.")
-                    break
-
-                _frame_idx += 1
-                # Skip inference on intermediate frames — display last annotated frame
-                # to keep window responsive without running YOLO on every frame.
-                if frame_skip > 1 and (_frame_idx % frame_skip != 0):
-                    if not no_display and annotated is not None:
-                        import cv2
-                        cv2.imshow(f"PPE Monitor — {camera_label}", annotated)
-                        key = cv2.waitKey(1) & 0xFF
-                        if key == ord("q"):
-                            break
+                    if stream.ended:
+                        log.info(f"[{camera_label}] Source ended. Exiting.")
+                        break
+                    time.sleep(0.005)
                     continue
 
-                persons    = person_detector.detect(frame)
-                # Crop-and-zoom mode: run PPE on each person crop
-                # for long-range cameras (e.g. 20m CCTV). Enabled with --zoom.
-                person_boxes = [p["bbox"] for p in persons] if zoom_mode else None
-                ppe_items  = ppe_detector.detect(frame, person_boxes=person_boxes)
-                ppe_items  = ppe_smoother.update(ppe_items)   # persist intermittent hits
-                persons    = compliance_checker.check(persons, ppe_items)
-                new_alerts = alert_engine.update(persons)
+                results, results_seq, infer_fps = worker.latest()
+                disp_fps = fps_counter.update()
 
-                if new_alerts and annotated is not None:
-                    for a in new_alerts:
-                        log.warning(f"[{camera_label}] ALERT: {a.summary}")
-                        shot_path = _save_screenshot(annotated, screenshots, prefix="alert")
-                        db_logger.log_violation(a, screenshot_path=shot_path)
-                        if whatsapp and alerts_enabled:
-                            whatsapp.send_alert(a, screenshot_path=shot_path)
-                        elif whatsapp and not alerts_enabled:
-                            log.info(f"[{camera_label}] WhatsApp alerts are muted — violation logged only")
+                if results is None:
+                    # No detection produced yet — show the raw frame so the window
+                    # isn't blank while the first inference is in flight.
+                    annotated = frame.copy()
+                else:
+                    persons, ppe_items, new_alerts = results
+                    fresh = results_seq != last_handled_seq
+                    streaks = {
+                        p["track_id"]: alert_engine.streak_for(p["track_id"])
+                        for p in persons if p.get("track_id") is not None
+                    }
+                    annotated = annotator.draw(
+                        frame           = frame,
+                        persons         = persons,
+                        ppe_items       = ppe_items,
+                        fps             = disp_fps,
+                        new_alerts      = new_alerts if fresh else [],
+                        recent_alerts   = alert_engine.recent_alerts,
+                        streaks         = streaks,
+                        alert_threshold = alert_frames,
+                        alerts_enabled  = alerts_enabled,
+                    )
+                    # Fire side-effects once per new detection result (not per
+                    # displayed frame), using the annotated frame just drawn.
+                    if new_alerts and fresh:
+                        last_handled_seq = results_seq
+                        _handle_alerts(new_alerts, annotated, alerts_enabled)
 
-                fps = fps_counter.update()
-                streaks = {
-                    p["track_id"]: alert_engine.streak_for(p["track_id"])
-                    for p in persons if p.get("track_id") is not None
-                }
-                annotated = annotator.draw(
-                    frame           = frame,
-                    persons         = persons,
-                    ppe_items       = ppe_items,
-                    fps             = fps,
-                    new_alerts      = new_alerts,
-                    recent_alerts   = alert_engine.recent_alerts,
-                    streaks         = streaks,
-                    alert_threshold = alert_frames,
-                    alerts_enabled  = alerts_enabled,
-                )
+                if video_writer is not None:
+                    video_writer.write(annotated)
 
-            # Write annotated frame to output video if recording
-            if video_writer is not None and annotated is not None:
-                video_writer.write(annotated)
+                if not no_display:
+                    import cv2
+                    cv2.imshow(f"PPE Monitor — {camera_label}", annotated)
+                    key = cv2.waitKey(1) & 0xFF
+                    if key == ord("q"):
+                        log.info(f"[{camera_label}] Q pressed — shutting down.")
+                        break
+                    elif key == ord("s"):
+                        _save_screenshot(annotated, screenshots)
+                    elif key == ord("a"):
+                        alerts_enabled = not alerts_enabled
+                        state = "ON" if alerts_enabled else "OFF (muted)"
+                        log.info(f"[{camera_label}] WhatsApp alerts toggled → {state}")
+        except KeyboardInterrupt:
+            log.info(f"[{camera_label}] Interrupted.")
+        finally:
+            worker.stop()
+            stream.release()
 
-            if not no_display and annotated is not None:
-                import cv2
-                cv2.imshow(f"PPE Monitor — {camera_label}", annotated)
-                key = cv2.waitKey(1) & 0xFF
-                if key == ord("q"):
-                    log.info(f"[{camera_label}] Q pressed — shutting down.")
-                    break
-                elif key == ord("s"):
-                    _save_screenshot(annotated, screenshots)
-                elif key == ord("p"):
-                    paused = not paused
-                    log.info("Paused." if paused else "Resumed.")
-                elif key == ord("a"):
-                    alerts_enabled = not alerts_enabled
-                    state = "ON" if alerts_enabled else "OFF (muted)"
-                    log.info(f"[{camera_label}] WhatsApp alerts toggled → {state}")
+    else:
+        # ── FILE: synchronous, every-frame processing (preserves full output) ───
+        paused     = False
+        _frame_idx = 0
+        try:
+            while True:
+                if not paused:
+                    frame = source.read()
+                    if frame is None:
+                        log.info(f"[{camera_label}] Source exhausted. Exiting.")
+                        break
 
-    except KeyboardInterrupt:
-        log.info(f"[{camera_label}] Interrupted.")
+                    _frame_idx += 1
+                    # Skip inference on intermediate frames — display last annotated
+                    # frame to keep things responsive without running YOLO on every one.
+                    if frame_skip > 1 and (_frame_idx % frame_skip != 0):
+                        if not no_display and annotated is not None:
+                            import cv2
+                            cv2.imshow(f"PPE Monitor — {camera_label}", annotated)
+                            if cv2.waitKey(1) & 0xFF == ord("q"):
+                                break
+                        continue
+
+                    persons, ppe_items, new_alerts = _process(frame)
+
+                    if new_alerts and annotated is not None:
+                        _handle_alerts(new_alerts, annotated, alerts_enabled)
+
+                    fps = fps_counter.update()
+                    streaks = {
+                        p["track_id"]: alert_engine.streak_for(p["track_id"])
+                        for p in persons if p.get("track_id") is not None
+                    }
+                    annotated = annotator.draw(
+                        frame           = frame,
+                        persons         = persons,
+                        ppe_items       = ppe_items,
+                        fps             = fps,
+                        new_alerts      = new_alerts,
+                        recent_alerts   = alert_engine.recent_alerts,
+                        streaks         = streaks,
+                        alert_threshold = alert_frames,
+                        alerts_enabled  = alerts_enabled,
+                    )
+
+                # Write annotated frame to output video if recording
+                if video_writer is not None and annotated is not None:
+                    video_writer.write(annotated)
+
+                if not no_display and annotated is not None:
+                    import cv2
+                    cv2.imshow(f"PPE Monitor — {camera_label}", annotated)
+                    key = cv2.waitKey(1) & 0xFF
+                    if key == ord("q"):
+                        log.info(f"[{camera_label}] Q pressed — shutting down.")
+                        break
+                    elif key == ord("s"):
+                        _save_screenshot(annotated, screenshots)
+                    elif key == ord("p"):
+                        paused = not paused
+                        log.info("Paused." if paused else "Resumed.")
+                    elif key == ord("a"):
+                        alerts_enabled = not alerts_enabled
+                        state = "ON" if alerts_enabled else "OFF (muted)"
+                        log.info(f"[{camera_label}] WhatsApp alerts toggled → {state}")
+
+        except KeyboardInterrupt:
+            log.info(f"[{camera_label}] Interrupted.")
 
     # ── Summary ────────────────────────────────────────────────────────────────
     total = alert_engine.total_alerts()

@@ -1,0 +1,7 @@
+ultralytics>=8.4
+opencv-python>=4.8
+numpy>=1.24
+PyYAML>=6.0
+lap>=0.5.12          # linear assignment — required by ByteTrack/BoT-SORT
+# torch/torchvision come with ultralytics; install the CUDA build on the GPU box:
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121

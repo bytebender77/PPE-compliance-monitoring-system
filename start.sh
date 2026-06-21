@@ -32,7 +32,15 @@ echo ""
 open "http://localhost:8000"
 
 # Start pipeline (webcam, foreground)
-python -m ppe_compliance_system.main --source 0 --device mps
+# --ppe-imgsz 1280  : higher resolution for reliable jacket/vest detection
+# --frame-skip 3    : threaded live mode ignores this, kept for file-source fallback
+# --ppe-conf 0.3    : suppress noise, tuned for v5 jacket-only model
+python -m ppe_compliance_system.main \
+    --source 0 \
+    --device mps \
+    --ppe-imgsz 1280 \
+    --frame-skip 3 \
+    --ppe-conf 0.3
 
 # When pipeline exits (Q pressed), kill dashboard too
 kill $DASHBOARD_PID 2>/dev/null
