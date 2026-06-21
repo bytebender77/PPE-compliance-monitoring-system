@@ -154,7 +154,7 @@ function metricCard(slide, x, y, w, value, label, color = INDIGO) {
   const stats = [
     ["7", "System Stages"],
     ["0.897", "mAP@0.5"],
-    ["3", "PPE Classes"],
+    ["4", "PPE Classes"],
     ["<1s", "Alert Latency"]
   ];
   stats.forEach(([val, lbl], i) => {

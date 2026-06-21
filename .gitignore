@@ -74,6 +74,12 @@ debug_snapshot.jpg
 .DS_Store
 Thumbs.db
 
+# ── Reorganized folders (2026-06-16 cleanup) — large data/media/checkpoints ──
+datasets/
+media/
+output/
+# models/archive/ is already covered by the models/ rule above
+
 # ── Roboflow dataset exports, merged datasets & archives (large, regenerable) ──
 *.zip
 *.yolov8*/

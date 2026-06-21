@@ -1,0 +1,11 @@
+# ByteTrack reference config (ultralytics format).
+# NOTE: run.py generates an *effective* tracker file (_active_tracker.yaml) from
+# config.py at launch so --tracker / --track-buffer are honoured. This file is
+# kept as a readable reference / fallback.
+tracker_type: bytetrack
+track_high_thresh: 0.25   # first-stage match threshold
+track_low_thresh: 0.1     # second-stage (recovers low-score detections)
+new_track_thresh: 0.25    # min score to spawn a new track
+track_buffer: 30          # frames a lost track is kept alive before deletion
+match_thresh: 0.8         # association similarity threshold
+fuse_score: True          # fuse detection score with motion/IoU
