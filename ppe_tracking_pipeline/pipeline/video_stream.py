@@ -36,7 +36,14 @@ class ThreadedCamera:
 
     def __init__(self, source: str) -> None:
         self.source_str = source
-        self._cap = cv2.VideoCapture(resolve_source(source))
+        resolved = resolve_source(source)
+        # Force the FFMPEG backend for URL/file sources so OpenCV never falls
+        # back to its image-sequence reader on RTSP streams. Webcam indices
+        # (ints) keep the platform default (AVFoundation on macOS).
+        if isinstance(resolved, str):
+            self._cap = cv2.VideoCapture(resolved, cv2.CAP_FFMPEG)
+        else:
+            self._cap = cv2.VideoCapture(resolved)
         try:
             self._cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
         except Exception:

@@ -49,6 +49,7 @@ class Config:
     association_overlap: float = 0.10  # min (PPE∩person)/PPE_area to bind PPE→track
     box_hold_frames: int = 30        # render: keep drawing a track this many frames
                                      #   after its last detection (bridges misses)
+    show_ppe_boxes: bool = True      # draw individual PPE item boxes (helmet/vest/…)
 
     # ── Alerts ────────────────────────────────────────────────────────────────
     alert_cooldown_s: float = 60.0   # per-track_id cooldown

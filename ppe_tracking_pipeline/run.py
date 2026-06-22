@@ -137,6 +137,8 @@ def handle_key(key, cfg, annotated, alerts) -> bool:
         cfg.presence_ratio = max(0.05, round(cfg.presence_ratio - 0.05, 2)); log.info(f"presence={cfg.presence_ratio}")
     elif key == ord("."):
         cfg.presence_ratio = min(1.0, round(cfg.presence_ratio + 0.05, 2)); log.info(f"presence={cfg.presence_ratio}")
+    elif key == ord("b"):
+        cfg.show_ppe_boxes = not cfg.show_ppe_boxes; log.info(f"show_ppe_boxes={cfg.show_ppe_boxes}")
     return True
 
 
@@ -157,6 +159,7 @@ def main() -> None:
     def process_frame(frame, idx):
         persons = tracker.update(frame)
         ppe = ppe_det.detect(frame)
+        manager.set_ppe(ppe)
         per_track = associate(persons, ppe, cfg.association_overlap)
         manager.update(persons, per_track, idx)
 
@@ -213,7 +216,7 @@ def _run_file(args, cfg, manager, alerts, renderer, process_frame, tick, make_hu
         workers = manager.snapshot()
         events = manager.drain_events()
         fps = tick()
-        annotated = renderer.draw(frame, workers, make_hud(cfg, manager.stats(), fps))
+        annotated = renderer.draw(frame, workers, make_hud(cfg, manager.stats(), fps), manager.get_ppe())
         alerts.handle(events, annotated)
 
         if args.save:
@@ -274,7 +277,7 @@ def _run_live(args, cfg, tracker, ppe_det, manager, alerts, renderer,
             workers = manager.snapshot()
             events = manager.drain_events()
             fps = tick()
-            annotated = renderer.draw(frame, workers, make_hud(cfg, manager.stats(), fps))
+            annotated = renderer.draw(frame, workers, make_hud(cfg, manager.stats(), fps), manager.get_ppe())
             alerts.handle(events, annotated)
 
             if args.save:

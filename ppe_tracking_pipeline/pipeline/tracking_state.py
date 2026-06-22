@@ -104,6 +104,15 @@ class WorkerTrackManager:
         self.frame_idx = 0
         self._lock = threading.Lock()
         self._events: List[Dict[str, Any]] = []   # violation-onset events
+        self._latest_ppe: List[Dict[str, Any]] = []  # raw PPE detections (for drawing)
+
+    def set_ppe(self, ppe: List[Dict[str, Any]]) -> None:
+        with self._lock:
+            self._latest_ppe = list(ppe)
+
+    def get_ppe(self) -> List[Dict[str, Any]]:
+        with self._lock:
+            return list(self._latest_ppe)
 
     def update(self, persons, per_track_ppe: Dict[int, Set[str]], frame_idx: int) -> None:
         with self._lock:
